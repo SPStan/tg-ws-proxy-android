@@ -733,6 +733,7 @@ pub struct ProxyPools {
     pub ws: Arc<WsPool>,
     pub cf_worker: Arc<CfWorkerPool>,
     cf_tls: bool,
+    cf_h2: crate::cf_h2::CfH2Pool,
 }
 
 impl ProxyPools {
@@ -740,6 +741,7 @@ impl ProxyPools {
         let cf_tls = !DISABLE_SECURE.load(Ordering::Relaxed);
         ProxyPools {
             cf_tls,
+            cf_h2: Default::default(),
             ws: Arc::new(WsPool::new(cancel_token.clone())),
             cf_worker: Arc::new(CfWorkerPool::new(cancel_token, cf_tls)),
         }
@@ -1004,6 +1006,7 @@ pub async fn bridge_ws_stream(
     label: String,
     dc: i32,
     is_media: bool,
+    protocol: u32,
     splitter: Option<MsgSplitter>,
     clt_dec: TrackedStream,
     clt_enc: TrackedStream,
@@ -1348,6 +1351,7 @@ pub async fn do_fallback<R, W>(
     dc: i32,
     is_test: bool,
     is_media: bool,
+    protocol: u32,
     splitter: Option<MsgSplitter>,
     clt_dec: &TrackedStream,
     clt_enc: &TrackedStream,
@@ -1443,6 +1447,26 @@ where
     }
 
     // Шаг 2: cf-ws (без halves).
+    if use_cf && is_media && pools.cf_tls {
+        if let Some(lane) = pools.cf_h2.open(dc, &label).await {
+            STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
+            let result = crate::cf_h2::bridge(
+                conn_read,
+                conn_write,
+                lane,
+                protocol,
+                (clt_dec.clone_state(), clt_enc.clone_state()),
+                cancel_token,
+            ).await;
+            if let Err(error) = result {
+                if error.kind() != std::io::ErrorKind::UnexpectedEof {
+                    lwarn!("[{}] CF HTTP/2: {}", label, error);
+                }
+            }
+            return true;
+        }
+    }
+
     if use_cf {
         if let Some((ws, _chosen_domain)) =
             cfproxy_acquire_ws(dc, is_media, ws_path, &cancel_token, pools.cf_tls).await
@@ -1827,6 +1851,7 @@ async fn serve_core<R, W>(
                 dc,
                 is_test_dc,
                 is_media,
+                proto_int,
                 splitter,
                 &clt_decryptor,
                 &clt_encryptor,
@@ -1958,6 +1983,7 @@ async fn serve_core<R, W>(
             dc,
             is_test_dc,
             is_media,
+            proto_int,
             splitter_fb,
             &clt_decryptor,
             &clt_encryptor,
@@ -2017,6 +2043,7 @@ async fn serve_core<R, W>(
                     dc,
                     is_test_dc,
                     is_media,
+                    proto_int,
                     splitter_fb,
                     &clt_decryptor,
                     &clt_encryptor,
@@ -2042,6 +2069,7 @@ async fn serve_core<R, W>(
                         dc,
                         is_test_dc,
                         is_media,
+                        proto_int,
                         splitter_fb,
                         &clt_decryptor,
                         &clt_encryptor,
