@@ -48,7 +48,7 @@ bash scripts/verify-android-apk.sh app/build/outputs/apk/arm64/debug/app-arm64-d
 
 Для последующих релизов загрузите постоянный ключ владельца в GitHub Actions Secrets. Workflow ожидает `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` и `ANDROID_KEY_PASSWORD`. Запустите Android workflow с параметром `sign_release`. Артефакт `arm64-release` содержит проверенный подписанный APK. Пробный APK подписан отладочным ключом CI. Переход с debug на APK с ключом владельца потребует удаления debug-версии приложения.
 
-Для проверки на эмуляторе CI собирает отдельный APK x86_64 под API 37. По умолчанию используется стандартный образ с размером страницы 4 КБ. Для образа 16 КБ запустите workflow вручную с параметром `emulator_16k`.
+Для проверки на эмуляторе CI собирает отдельный APK x86_64 под API 37. По умолчанию используется образ AOSP с размером страницы 4 КБ. Для образа 16 КБ запустите workflow вручную с параметром `emulator_16k`.
 
 ## Проверка на телефоне CP3A.261005.005
 

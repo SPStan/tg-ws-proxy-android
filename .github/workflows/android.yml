@@ -83,7 +83,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      EMULATOR_IMAGE: ${{ inputs.emulator_16k && 'system-images;android-37.1;google_apis_ps16k;x86_64' || 'system-images;android-37.0;google_apis;x86_64' }}
+      EMULATOR_IMAGE: ${{ inputs.emulator_16k && 'system-images;android-37.1;google_apis_ps16k;x86_64' || 'system-images;android-37.0;default;x86_64' }}
       EMULATOR_PAGE: ${{ inputs.emulator_16k && '16384' || '4096' }}
     defaults:
       run:
@@ -122,7 +122,7 @@ jobs:
           adb start-server
           "$ANDROID_HOME/emulator/emulator" -accel-check
           "$ANDROID_HOME/emulator/emulator" -avd api37 -port 5554 -cores 4 -memory 4096 \
-            -no-window -no-audio -no-boot-anim -no-snapshot -gpu software -feature -Vulkan -show-kernel > emulator.log 2>&1 &
+            -no-window -no-audio -no-boot-anim -no-snapshot -gpu swangle -feature -Vulkan -show-kernel > emulator.log 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           export ANDROID_SERIAL=emulator-5554

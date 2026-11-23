@@ -17,7 +17,16 @@ test "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" = 37
 page_size=$(adb shell getconf PAGE_SIZE | tr -d '\r')
 echo "Page size: $page_size"
 test "$page_size" = "${EMULATOR_PAGE:-4096}"
-adb install -g "$1"
+installed=false
+for attempt in 1 2 3; do
+  if adb install --no-streaming -r "$1"; then
+    installed=true
+    break
+  fi
+  sleep 10
+done
+test "$installed" = true
+adb shell pm grant com.spstan.tgwsproxy android.permission.POST_NOTIFICATIONS
 
 activity=com.spstan.tgwsproxy/com.amurcanov.tgwsproxy.MainActivity
 adb logcat -c
