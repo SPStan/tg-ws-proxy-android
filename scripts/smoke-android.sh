@@ -2,7 +2,14 @@
 set -euo pipefail
 adb wait-for-device
 timeout 240 bash -c 'until [[ $(adb shell getprop sys.boot_completed | tr -d "\r") == 1 ]]; do sleep 3; done'
-adb shell input keyevent 82
+# Android may report boot completed while system_server is restarting.
+timeout 120 bash -c '
+  until adb shell cmd package path android 2>/dev/null | grep -q "^package:" &&
+        adb shell input keyevent 82 >/dev/null 2>&1; do
+    sleep 3
+  done
+'
+adb shell wm dismiss-keyguard || true
 adb shell getprop ro.build.id
 adb shell getprop ro.product.cpu.abilist
 test "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" = 37

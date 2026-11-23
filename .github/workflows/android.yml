@@ -1,6 +1,7 @@
 name: Android
 on:
   push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       sign_release:
@@ -130,7 +131,11 @@ jobs:
             tail -n 100 emulator.log
             exit 1
           fi
-          bash scripts/smoke-android.sh app/build/outputs/apk/emulator/debug/app-emulator-debug.apk
+          if ! bash scripts/smoke-android.sh app/build/outputs/apk/emulator/debug/app-emulator-debug.apk; then
+            adb logcat -d -s ProxyService TgWsProxy AndroidRuntime | tail -n 100 || true
+            tail -n 80 emulator.log
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
