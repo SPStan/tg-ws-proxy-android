@@ -86,13 +86,23 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
+      - name: Configure the virtual device directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/proxy-avd"
+          echo "ANDROID_AVD_HOME=$RUNNER_TEMP/proxy-avd" >> "$GITHUB_ENV"
       - name: Install Android 17 16 KB image and build x86_64 APK
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup target add --toolchain 1.95.0 x86_64-linux-android
           image='system-images;android-37.1;google_apis_ps16k;x86_64'
           sdkmanager 'platforms;android-37.0' 'ndk;28.2.13676358' emulator "$image"
-          echo no | avdmanager create avd --name api37-16k --package "$image" --force
+          avdmanager create avd --name api37-16k --package "$image" --path "$ANDROID_AVD_HOME/api37-16k.avd" --force <<< no
+          ini=$(find "$ANDROID_AVD_HOME" "$HOME/.android" -maxdepth 3 -name api37-16k.ini -print -quit)
+          test -n "$ini"
+          if [[ "$ini" != "$ANDROID_AVD_HOME/api37-16k.ini" ]]; then
+            cp "$ini" "$ANDROID_AVD_HOME/"
+          fi
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx api37-16k
           bash scripts/build-android-native.sh x86_64
           java -classpath gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :app:assembleEmulatorDebug --no-daemon
       - name: Verify installation, proxy lifecycle and TLS preference
@@ -100,7 +110,12 @@ jobs:
           test -e /dev/kvm
           sudo chmod a+rw /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -avd api37-16k -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader > emulator.log 2>&1 &
-          timeout 80 adb wait-for-device
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          if ! timeout 150 adb wait-for-device; then
+            cat emulator.log
+            exit 1
+          fi
           bash scripts/smoke-android.sh app/build/outputs/apk/emulator/debug/app-emulator-debug.apk
       - uses: actions/upload-artifact@v4
         if: always()

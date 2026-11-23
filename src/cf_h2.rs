@@ -4,11 +4,11 @@ use crate::{linfo, lwarn};
 use reqwest::{Client, Version};
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -19,6 +19,13 @@ const MAX_PADDING: usize = 256;
 const MAX_PENDING: usize = 8;
 const COOLDOWN: Duration = Duration::from_secs(30);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(8);
+const REPLAY_MAX_BYTES: usize = 64 * 1024;
+const REPLAY_MAX_AGE: Duration = Duration::from_secs(30);
+const REPLAY_DELAY: Duration = Duration::from_secs(2);
+const REPLAY_LIMIT: u8 = 3;
+const REQUEST_QUEUED: u8 = 0;
+const REQUEST_SENT: u8 = 1;
+const RESPONSE_STARTED: u8 = 2;
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message)
@@ -193,12 +200,14 @@ impl Lane {
         Ok(Self { client, url, requests: Arc::new(Semaphore::new(MAX_PENDING)) })
     }
 
-    async fn post(&self, packet: Vec<u8>) -> io::Result<Reply> {
+    async fn post(&self, packet: Vec<u8>, phase: &AtomicU8) -> io::Result<Reply> {
+        phase.store(REQUEST_SENT, Ordering::Relaxed);
         STATS.bytes_up.fetch_add(packet.len() as i64, Ordering::Relaxed);
         let mut response = self.client.post(&self.url)
             .header("content-type", "application/octet-stream")
             .header("accept-encoding", "identity")
             .body(packet).send().await.map_err(io::Error::other)?;
+        phase.store(RESPONSE_STARTED, Ordering::Relaxed);
         let status = response.status().as_u16();
         if response.version() != Version::HTTP_2 {
             return Err(invalid("CF /api did not negotiate HTTP/2"));
@@ -238,6 +247,45 @@ impl Lane {
     }
 }
 
+struct RecoveryPacket {
+    id: u64,
+    body: Vec<u8>,
+    started: Instant,
+    last_attempt: Option<Instant>,
+    attempts: u8,
+    replaying: bool,
+    original_phase: Arc<AtomicU8>,
+    last_reply: Option<[u8; 32]>,
+}
+
+impl RecoveryPacket {
+    fn should_retry(&self, idle: bool, last_progress: Instant) -> bool {
+        let eligible = !self.replaying && self.attempts < REPLAY_LIMIT
+            && self.started.elapsed() <= REPLAY_MAX_AGE
+            && self.last_attempt.is_none_or(|at| at.elapsed() >= REPLAY_DELAY);
+        let idle = idle && last_progress.elapsed() >= Duration::from_secs(1);
+        let overdue = self.original_phase.load(Ordering::Relaxed) == REQUEST_SENT
+            && self.started.elapsed() >= Duration::from_secs(3);
+        eligible && (idle || overdue)
+    }
+}
+
+async fn send_request(
+    lane: Arc<Lane>,
+    id: u64,
+    packet: Vec<u8>,
+    phase: Arc<AtomicU8>,
+    replay: Option<OwnedSemaphorePermit>,
+) -> io::Result<(u64, bool, Reply, OwnedSemaphorePermit)> {
+    let is_replay = replay.is_some();
+    let permit = match replay {
+        Some(permit) => permit,
+        None => lane.requests.clone().acquire_owned().await.map_err(io::Error::other)?,
+    };
+    let reply = lane.post(packet, &phase).await?;
+    Ok((id, is_replay, reply, permit))
+}
+
 pub async fn bridge<R, W>(
     mut reader: R, mut writer: W, lane: Arc<Lane>, protocol: u32,
     (mut decrypt, mut encrypt): (TrackedStream, TrackedStream), cancel: CancellationToken,
@@ -256,22 +304,36 @@ where
         }
     };
     let download = async {
+        use sha2::{Digest, Sha256};
         let mut pending = JoinSet::new();
+        let mut timer = tokio::time::interval(Duration::from_millis(250));
+        let mut last_progress = Instant::now();
+        let mut sequence = 0;
+        let mut recovery: Option<RecoveryPacket> = None;
         loop {
             tokio::select! {
-                Some(packet) = incoming.recv(), if pending.len() < MAX_PENDING => {
-                    let lane = lane.clone();
-                    pending.spawn(async move {
-                        let permit = lane.requests.clone().acquire_owned().await.map_err(io::Error::other)?;
-                        Ok::<_, io::Error>((lane.post(packet).await?, permit))
-                    });
-                }
+                biased;
                 Some(result) = pending.join_next(), if !pending.is_empty() => {
-                    let (reply, _permit) = result.map_err(io::Error::other)??;
+                    let (id, replay, reply, _permit) = result.map_err(io::Error::other)??;
                     let (body, terminal) = match reply {
                         Reply::Data(body) => (body, false),
                         Reply::TransportError(code) => (code.to_le_bytes().to_vec(), true),
                     };
+                    if let Some(entry) = recovery.as_mut().filter(|entry| entry.id == id) {
+                        if replay {
+                            entry.replaying = false;
+                        } else {
+                            entry.original_phase.store(RESPONSE_STARTED, Ordering::Relaxed);
+                        }
+                        if !body.is_empty() && !terminal {
+                            let digest: [u8; 32] = Sha256::digest(&body).into();
+                            if entry.last_reply == Some(digest) {
+                                continue;
+                            }
+                            entry.last_reply = Some(digest);
+                        }
+                    }
+                    last_progress = Instant::now();
                     if !body.is_empty() {
                         let mut frame = encode_reply(&body, protocol);
                         encrypt.xor(&mut frame);
@@ -280,6 +342,44 @@ where
                     }
                     if terminal {
                         return Ok(());
+                    }
+                }
+                Some(packet) = incoming.recv(), if pending.len() < MAX_PENDING => {
+                    sequence += 1;
+                    let phase = Arc::new(AtomicU8::new(REQUEST_QUEUED));
+                    if packet[..8] != [0; 8] && packet.len() <= REPLAY_MAX_BYTES {
+                        recovery = Some(RecoveryPacket {
+                            id: sequence,
+                            body: packet.clone(),
+                            started: Instant::now(),
+                            last_attempt: None,
+                            attempts: 0,
+                            replaying: false,
+                            original_phase: phase.clone(),
+                            last_reply: None,
+                        });
+                    } else if recovery.as_ref().is_some_and(|entry| entry.body[..8] != packet[..8]) {
+                        recovery = None;
+                    }
+                    pending.spawn(send_request(lane.clone(), sequence, packet, phase, None));
+                }
+                _ = timer.tick(), if pending.len() + 1 < MAX_PENDING => {
+                    let Some(entry) = recovery.as_mut().filter(|entry| {
+                        entry.should_retry(pending.is_empty(), last_progress)
+                    }) else {
+                        continue;
+                    };
+                    if lane.requests.available_permits() <= 1 {
+                        continue;
+                    }
+                    if let Ok(permit) = lane.requests.clone().try_acquire_owned() {
+                        entry.last_attempt = Some(Instant::now());
+                        entry.attempts += 1;
+                        entry.replaying = true;
+                        pending.spawn(send_request(
+                            lane.clone(), entry.id, entry.body.clone(),
+                            Arc::new(AtomicU8::new(REQUEST_QUEUED)), Some(permit),
+                        ));
                     }
                 }
             }
@@ -309,6 +409,26 @@ mod tests {
         let decoded = read_packet(&mut frame.as_slice(), &mut new_aes_ctr(&[0; 32], &[0; 16]), PROTO_TAG_SECURE)
             .await.unwrap();
         assert_eq!(decoded, body);
+    }
+
+    #[test]
+    fn recovery_does_not_interrupt_a_response_body() {
+        let phase = Arc::new(AtomicU8::new(REQUEST_SENT));
+        let mut entry = RecoveryPacket {
+            id: 1,
+            body: vec![7; 24],
+            started: Instant::now() - Duration::from_secs(4),
+            last_attempt: None,
+            attempts: 0,
+            replaying: false,
+            original_phase: phase.clone(),
+            last_reply: None,
+        };
+        assert!(entry.should_retry(false, Instant::now()));
+        phase.store(RESPONSE_STARTED, Ordering::Relaxed);
+        assert!(!entry.should_retry(false, Instant::now()));
+        entry.attempts = REPLAY_LIMIT;
+        assert!(!entry.should_retry(true, Instant::now() - REPLAY_DELAY));
     }
 
     #[tokio::test]
@@ -348,7 +468,7 @@ mod tests {
             .timeout(Duration::from_secs(5))
             .build().unwrap();
         let lane = Lane::preflight(client, format!("https://localhost:{port}/api")).await.unwrap();
-        assert!(matches!(lane.post(vec![7; 24]).await.unwrap(), Reply::Data(data) if data == vec![8; 24]));
+        assert!(matches!(lane.post(vec![7; 24], &AtomicU8::new(REQUEST_QUEUED)).await.unwrap(), Reply::Data(data) if data == vec![8; 24]));
         server.abort();
     }
 
