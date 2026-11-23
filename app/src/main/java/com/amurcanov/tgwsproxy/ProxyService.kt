@@ -181,6 +181,7 @@ class ProxyService : Service() {
 
             try {
                 val transport = runBlocking { SettingsStore(applicationContext).transportSettings.first() }
+                NativeProxy.setCfH2Media(transport.cfH2Media)
                 NativeProxy.setDisableSecure(transport.disableCfTls)
                 NativeProxy.setCfWorkerDomains(transport.workerDomains)
                 NativeProxy.setFakeTlsDomain(transport.fakeTlsDomain)

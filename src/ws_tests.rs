@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
-fn test_tls() -> (TlsAcceptor, Arc<ClientConfig>) {
+pub(crate) fn server_with_cert(alpn: &[Vec<u8>]) -> (TlsAcceptor, CertificateDer<'static>) {
     let dir = std::env::temp_dir().join(format!("tgwsproxy-{}", rand::random::<u64>()));
     std::fs::create_dir(&dir).unwrap();
     let cert = dir.join("cert.der");
@@ -29,12 +29,18 @@ fn test_tls() -> (TlsAcceptor, Arc<ClientConfig>) {
     let cert = CertificateDer::from(std::fs::read(cert).unwrap());
     let key = rustls_pki_types::PrivatePkcs8KeyDer::from(std::fs::read(key).unwrap());
     std::fs::remove_dir_all(dir).unwrap();
-    let server = rustls::ServerConfig::builder()
+    let mut server = rustls::ServerConfig::builder()
         .with_no_client_auth().with_single_cert(vec![cert.clone()], key.into()).unwrap();
+    server.alpn_protocols = alpn.to_vec();
+    (TlsAcceptor::from(Arc::new(server)), cert)
+}
+
+fn test_tls() -> (TlsAcceptor, Arc<ClientConfig>) {
+    let (server, cert) = server_with_cert(&[]);
     let mut roots = RootCertStore::empty();
     roots.add(cert).unwrap();
     let client = ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
-    (TlsAcceptor::from(Arc::new(server)), Arc::new(client))
+    (server, Arc::new(client))
 }
 
 async fn serve_upgrade<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, path: String) {

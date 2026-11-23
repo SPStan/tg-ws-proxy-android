@@ -518,3 +518,35 @@ async fn proxy_to_masking_domain(conn: TcpStream, initial: Vec<u8>, domain: &str
 
     let _ = tokio::join!(up, down);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_flight_matches_hmac_suite_and_profile() {
+        let secret = [1; 16];
+        let client_random = [2; 32];
+        let session_id = [3; 32];
+        let mut flight = build_server_hello(&secret, &client_random, &session_id, (0x1303, true), 214);
+        assert_eq!(&flight[44..76], &session_id);
+        assert_eq!(&flight[76..78], &0x1303u16.to_be_bytes());
+        assert!(flight.windows(6).any(|window| window == [0x04, 0x64, 0x11, 0xec, 0x04, 0x60]));
+        let hello_end = 5 + u16::from_be_bytes([flight[3], flight[4]]) as usize;
+        assert_eq!(&flight[hello_end..hello_end + 6], &CCS_FRAME);
+        assert_eq!(&flight[hello_end + 6..hello_end + 11], &[0x17, 3, 3, 0, 214]);
+        assert_eq!(flight.len(), hello_end + 11 + 214);
+        let signature = flight[11..43].to_vec();
+        flight[11..43].fill(0);
+        let mut mac = HmacSha256::new_from_slice(&secret).unwrap();
+        mac.update(&client_random);
+        mac.update(&flight);
+        mac.verify_slice(&signature).unwrap();
+    }
+
+    #[test]
+    fn malformed_hello_is_rejected() {
+        assert!(hello_parameters(&[0; 43]).is_none());
+        assert!(verify_client_hello(&[0; 128], &[0; 16]).is_none());
+    }
+}

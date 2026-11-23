@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -527,6 +527,8 @@ pub struct CfWorkerPool {
     exhausted_until: Mutex<HashMap<String, f64>>,
     cancel_token: CancellationToken,
     tls: bool,
+    rotating: Mutex<HashSet<i32>>,
+    retry: Mutex<HashMap<i32, (u32, Instant)>>,
 }
 
 impl CfWorkerPool {
@@ -537,6 +539,8 @@ impl CfWorkerPool {
             exhausted_until: Mutex::new(HashMap::new()),
             cancel_token,
             tls,
+            rotating: Mutex::new(HashSet::new()),
+            retry: Mutex::new(HashMap::new()),
         }
     }
 
@@ -589,6 +593,37 @@ impl CfWorkerPool {
         fallback_dst: String,
         worker_domains: Vec<String>,
     ) {
+        if worker_domains.is_empty() || POOL_SIZE.load(Ordering::Relaxed) <= 0 {
+            return;
+        }
+        if self.rotating.lock().await.insert(dc) {
+            let pool = self.clone();
+            let dst = fallback_dst.clone();
+            let domains = worker_domains.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(5));
+                tick.tick().await;
+                loop {
+                    tokio::select! {
+                        _ = pool.cancel_token.cancelled() => return,
+                        _ = tick.tick() => {
+                            let now = now_monotonic();
+                            if let Some(bucket) = pool.idle.lock().await.get_mut(&dc) {
+                                bucket.retain(|e| now - e.created < CF_WORKER_POOL_MAX_AGE && !e.ws.is_closed());
+                            }
+                            pool.refill(dc, dst.clone(), domains.clone()).await;
+                        }
+                    }
+                }
+            });
+        }
+        self.refill(dc, fallback_dst, worker_domains).await;
+    }
+
+    async fn refill(self: &Arc<Self>, dc: i32, fallback_dst: String, worker_domains: Vec<String>) {
+        if self.retry.lock().await.get(&dc).is_some_and(|(_, until)| Instant::now() < *until) {
+            return;
+        }
         let should = {
             let mut r = self.refilling.lock().await;
             if r.contains(&dc) {
@@ -618,6 +653,7 @@ impl CfWorkerPool {
                 result = pool.connect_one(worker_domains, fallback_dst, dc) => result,
             };
             if let Some((ws, domain)) = result {
+                pool.retry.lock().await.remove(&dc);
                 let mut map = pool.idle.lock().await;
                 map.entry(dc)
                     .or_insert_with(VecDeque::new)
@@ -627,6 +663,11 @@ impl CfWorkerPool {
                         worker_domain: domain,
                     });
                 ldebug!("CF worker pool refilled DC{}: ready", dc);
+            } else if !cancel.is_cancelled() {
+                let mut retry = pool.retry.lock().await;
+                let (failures, until) = retry.entry(dc).or_insert((0, Instant::now()));
+                *until = Instant::now() + Duration::from_secs((1u64 << (*failures).min(12)).min(3600));
+                *failures += 1;
             }
             pool.refilling.lock().await.remove(&dc);
         });
@@ -722,6 +763,8 @@ impl CfWorkerPool {
         self.idle.lock().await.clear();
         self.refilling.lock().await.clear();
         self.exhausted_until.lock().await.clear();
+        self.retry.lock().await.clear();
+        self.rotating.lock().await.clear();
     }
 }
 
@@ -733,6 +776,8 @@ pub struct ProxyPools {
     pub ws: Arc<WsPool>,
     pub cf_worker: Arc<CfWorkerPool>,
     cf_tls: bool,
+    cf_h2_media: bool,
+    tcp_attempts: parking_lot::Mutex<HashMap<(String, u16), TcpAttemptState>>,
     cf_h2: crate::cf_h2::CfH2Pool,
     fake_tls_appdata: AtomicUsize,
 }
@@ -742,6 +787,8 @@ impl ProxyPools {
         let cf_tls = !DISABLE_SECURE.load(Ordering::Relaxed);
         ProxyPools {
             cf_tls,
+            cf_h2_media: CF_H2_MEDIA.load(Ordering::Relaxed),
+            tcp_attempts: Default::default(),
             cf_h2: Default::default(),
             fake_tls_appdata: AtomicUsize::new(0),
             ws: Arc::new(WsPool::new(cancel_token.clone())),
@@ -1145,7 +1192,51 @@ pub async fn bridge_tcp_stream(
 // TCP fallback — порт bridge._tcp_fallback
 // ---------------------------------------------------------------------------
 
-pub async fn tcp_fallback<R, W>(
+#[derive(Default)]
+struct TcpAttemptState {
+    failures: u32,
+    retry_after: Option<Instant>,
+    connecting: bool,
+}
+
+struct TcpAttempt<'a> {
+    states: &'a parking_lot::Mutex<HashMap<(String, u16), TcpAttemptState>>,
+    key: (String, u16),
+    succeeded: Option<bool>,
+}
+
+impl<'a> TcpAttempt<'a> {
+    fn start(pools: &'a ProxyPools, dst: &str, port: u16) -> Option<Self> {
+        let states = &pools.tcp_attempts;
+        let key = (dst.to_owned(), port);
+        let mut map = states.lock();
+        let state = map.entry(key.clone()).or_default();
+        if state.connecting || state.retry_after.is_some_and(|deadline| Instant::now() < deadline) {
+            return None;
+        }
+        state.connecting = true;
+        Some(Self { states, key, succeeded: None })
+    }
+}
+
+impl Drop for TcpAttempt<'_> {
+    fn drop(&mut self) {
+        let mut states = self.states.lock();
+        if self.succeeded == Some(true) {
+            states.remove(&self.key);
+        } else if let Some(state) = states.get_mut(&self.key) {
+            state.connecting = false;
+            if self.succeeded == Some(false) {
+                let delay = (30u64 << state.failures.min(7)).min(3600);
+                state.failures += 1;
+                state.retry_after = Some(Instant::now() + Duration::from_secs(delay));
+            }
+        }
+    }
+}
+
+async fn tcp_fallback<R, W>(
+    pools: &ProxyPools,
     conn_read: R,
     conn_write: W,
     dst: &str,
@@ -1159,37 +1250,35 @@ where
     R: AsyncReadExt + Unpin + Send + 'static,
     W: AsyncWriteExt + Unpin + Send + 'static,
 {
-    let addr = format!("{}:{}", dst, port);
-    let mut remote =
-        match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&addr)).await {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                lwarn!("[{}] TCP fallback to {}:{} failed: {}", label, dst, port, e);
-                return false;
-            }
-            Err(_) => {
-                lwarn!("[{}] TCP fallback to {}:{} failed: timeout", label, dst, port);
-                return false;
-            }
-        };
-    let _ = remote.set_nodelay(true);
-
-    STATS.connections_tcp_fallback.fetch_add(1, Ordering::Relaxed);
-    if remote.write_all(init).await.is_err() {
+    let Some(mut attempt) = TcpAttempt::start(pools, dst, port) else {
+        ldebug!("[{}] TCP fallback {}:{} waiting for cooldown or another attempt", label, dst, port);
         return false;
-    }
+    };
+    let connect = async {
+        let mut remote = TcpStream::connect((dst, port)).await?;
+        let _ = remote.set_nodelay(true);
+        remote.write_all(init).await?;
+        Ok::<_, std::io::Error>(remote)
+    };
+    let remote = match tokio::time::timeout(Duration::from_secs(10), connect).await {
+        Ok(Ok(remote)) => remote,
+        result => {
+            let reason = match result {
+                Ok(Err(error)) => error.to_string(),
+                _ => "timeout".to_owned(),
+            };
+            attempt.succeeded = Some(false);
+            lwarn!("[{}] TCP fallback to {}:{} failed: {}", label, dst, port, reason);
+            return false;
+        }
+    };
+    attempt.succeeded = Some(true);
+    drop(attempt);
+    STATS.connections_tcp_fallback.fetch_add(1, Ordering::Relaxed);
     let (clt_dec, clt_enc, tg_enc, tg_dec) = ctx_streams;
     bridge_tcp(
-        conn_read,
-        conn_write,
-        remote,
-        clt_dec,
-        clt_enc,
-        tg_enc,
-        tg_dec,
-        cancel_token,
-    )
-    .await;
+        conn_read, conn_write, remote, clt_dec, clt_enc, tg_enc, tg_dec, cancel_token,
+    ).await;
     true
 }
 
@@ -1449,7 +1538,7 @@ where
     }
 
     // Шаг 2: cf-ws (без halves).
-    if use_cf && is_media && pools.cf_tls {
+    if use_cf && is_media && pools.cf_tls && pools.cf_h2_media {
         if let Some(lane) = pools.cf_h2.open(dc, &label).await {
             STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
             let result = crate::cf_h2::bridge(
@@ -1507,6 +1596,7 @@ where
             label, dc, m_tag, fallback_dst, direct_tcp_port
         );
         return tcp_fallback(
+            pools,
             conn_read,
             conn_write,
             &fallback_dst,
@@ -2278,4 +2368,26 @@ pub fn parse_cidr_pool(cidrs_str: &str) -> HashMap<i32, String> {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_is_frozen_per_pool_and_tcp_backoff_is_session_local() {
+        crate::SetDisableSecure(0);
+        let first = ProxyPools::new(CancellationToken::new());
+        crate::SetDisableSecure(1);
+        let second = ProxyPools::new(CancellationToken::new());
+        crate::SetDisableSecure(0);
+        assert!(first.cf_tls && first.cf_worker.tls);
+        assert!(!second.cf_tls && !second.cf_worker.tls);
+        let mut attempt = TcpAttempt::start(&first, "127.0.0.1", 443).unwrap();
+        assert!(TcpAttempt::start(&first, "127.0.0.1", 443).is_none());
+        attempt.succeeded = Some(false);
+        drop(attempt);
+        assert!(TcpAttempt::start(&first, "127.0.0.1", 443).is_none());
+        assert!(TcpAttempt::start(&second, "127.0.0.1", 443).is_some());
+    }
 }

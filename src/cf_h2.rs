@@ -179,7 +179,10 @@ impl Lane {
             .connect_timeout(SETUP_TIMEOUT)
             .timeout(Duration::from_secs(65))
             .build().map_err(io::Error::other)?;
-        let url = format!("https://{host}/api");
+        Self::preflight(client, format!("https://{host}/api")).await
+    }
+
+    async fn preflight(client: Client, url: String) -> io::Result<Self> {
         let response = client.head(&url).send().await.map_err(io::Error::other)?;
         let status = response.status();
         if response.version() != Version::HTTP_2 ||
@@ -306,6 +309,47 @@ mod tests {
         let decoded = read_packet(&mut frame.as_slice(), &mut new_aes_ctr(&[0; 32], &[0; 16]), PROTO_TAG_SECURE)
             .await.unwrap();
         assert_eq!(decoded, body);
+    }
+
+    #[tokio::test]
+    async fn preflight_and_post_use_h2_on_a_controlled_server() {
+        use tokio::net::TcpListener;
+        let (tls, cert) = crate::ws::tests::server_with_cert(&[b"h2".to_vec()]);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let stream = tls.accept(stream).await.unwrap();
+            assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+            let mut connection = h2::server::handshake(stream).await.unwrap();
+            while let Some(request) = connection.accept().await {
+                let (mut request, mut send) = request.unwrap();
+                tokio::spawn(async move {
+                    assert_eq!(request.uri().path(), "/api");
+                    if request.method() == http::Method::HEAD {
+                        let response = http::Response::builder().status(501).body(()).unwrap();
+                        send.send_response(response, true).unwrap();
+                    } else {
+                        assert_eq!(request.method(), http::Method::POST);
+                        let mut body = Vec::new();
+                        while let Some(data) = request.body_mut().data().await {
+                            body.extend_from_slice(&data.unwrap());
+                        }
+                        assert_eq!(body, vec![7; 24]);
+                        let response = http::Response::builder().status(200).body(()).unwrap();
+                        let mut stream = send.send_response(response, false).unwrap();
+                        stream.send_data(vec![8; 24].into(), true).unwrap();
+                    }
+                });
+            }
+        });
+        let client = Client::builder().no_proxy().http2_prior_knowledge()
+            .add_root_certificate(reqwest::Certificate::from_der(cert.as_ref()).unwrap())
+            .timeout(Duration::from_secs(5))
+            .build().unwrap();
+        let lane = Lane::preflight(client, format!("https://localhost:{port}/api")).await.unwrap();
+        assert!(matches!(lane.post(vec![7; 24]).await.unwrap(), Reply::Data(data) if data == vec![8; 24]));
+        server.abort();
     }
 
     #[test]

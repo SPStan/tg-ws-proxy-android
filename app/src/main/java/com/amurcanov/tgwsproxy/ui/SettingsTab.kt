@@ -223,6 +223,16 @@ fun SettingsTab(settingsStore: SettingsStore) {
                 )
             }
             Text(stringResource(R.string.disable_cf_tls_description), style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.cf_h2_media), modifier = Modifier.weight(1f))
+                Switch(
+                    checked = savedTransport.cfH2Media && !savedTransport.disableCfTls,
+                    enabled = !savedTransport.disableCfTls,
+                    onCheckedChange = { enabled ->
+                        scope.launch { settingsStore.saveCfH2Media(enabled) }
+                    }
+                )
+            }
             OutlinedTextField(
                 value = workerDomains,
                 onValueChange = { workerDomains = it },

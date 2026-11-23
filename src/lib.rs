@@ -261,6 +261,11 @@ pub unsafe extern "C" fn SetFakeTlsDomain(c_domain: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn SetCfH2Media(enabled: c_int) {
+    CF_H2_MEDIA.store(enabled != 0, Ordering::Relaxed);
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn SetDisableSecure(v: c_int) {
     // --no-secure: порт 80 для CF proxy/worker.
     DISABLE_SECURE.store(v != 0, Ordering::Relaxed);

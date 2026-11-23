@@ -135,4 +135,5 @@
     <string name="transport_restart_required">Restart the proxy to apply the saved transport settings.</string>
     <string name="start_proxy">Start proxy</string>
     <string name="stop_proxy">Stop proxy</string>
+    <string name="cf_h2_media">HTTP/2 for CF media</string>
 </resources>

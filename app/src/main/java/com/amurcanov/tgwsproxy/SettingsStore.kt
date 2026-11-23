@@ -16,6 +16,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 data class TransportSettings(
     val disableCfTls: Boolean = false,
+    val cfH2Media: Boolean = true,
     val workerDomains: String = "",
     val fakeTlsDomain: String = ""
 )
@@ -42,6 +43,7 @@ class SettingsStore(private val context: Context) {
         val PORT = stringPreferencesKey("port")
         val BIND_IP = stringPreferencesKey("bind_ip")
         val POOL_SIZE = intPreferencesKey("pool_size")
+        val CF_H2_MEDIA = booleanPreferencesKey("cf_h2_media")
         val DISABLE_CF_TLS = booleanPreferencesKey("disable_cf_tls")
         val CF_WORKER_DOMAINS = stringPreferencesKey("cf_worker_domains")
         val FAKE_TLS_DOMAIN = stringPreferencesKey("fake_tls_domain")
@@ -93,6 +95,7 @@ class SettingsStore(private val context: Context) {
     val poolSize: Flow<Int> = context.dataStore.data.map { it[Keys.POOL_SIZE] ?: 4 }
     val transportSettings: Flow<TransportSettings> = context.dataStore.data.map {
         TransportSettings(
+            cfH2Media = it[Keys.CF_H2_MEDIA] ?: true,
             disableCfTls = it[Keys.DISABLE_CF_TLS] ?: false,
             workerDomains = it[Keys.CF_WORKER_DOMAINS].orEmpty(),
             fakeTlsDomain = it[Keys.FAKE_TLS_DOMAIN].orEmpty()
@@ -121,6 +124,10 @@ class SettingsStore(private val context: Context) {
     val updateDialogLastActionVersion: Flow<String> = context.dataStore.data.map { it[Keys.UPDATE_DIALOG_LAST_ACTION_VERSION] ?: "" }
     val updateDialogLastAction: Flow<String> = context.dataStore.data.map { it[Keys.UPDATE_DIALOG_LAST_ACTION] ?: "" }
     val updateDialogLastActionAt: Flow<Long> = context.dataStore.data.map { it[Keys.UPDATE_DIALOG_LAST_ACTION_AT] ?: 0L }
+
+    suspend fun saveCfH2Media(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.CF_H2_MEDIA] = enabled }
+    }
 
     suspend fun saveDisableCfTls(disabled: Boolean) {
         context.dataStore.edit { it[Keys.DISABLE_CF_TLS] = disabled }
