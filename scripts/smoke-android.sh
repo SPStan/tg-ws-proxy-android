@@ -10,6 +10,7 @@ timeout 120 bash -c '
   done
 '
 adb shell wm dismiss-keyguard || true
+echo 'Android framework is ready'
 adb shell getprop ro.build.id
 adb shell getprop ro.product.cpu.abilist
 test "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" = 37
@@ -19,8 +20,8 @@ test "$page_size" = "${EMULATOR_PAGE:-4096}"
 adb install -g "$1"
 
 activity=com.spstan.tgwsproxy/com.amurcanov.tgwsproxy.MainActivity
-adb shell am start -W -n "$activity"
 adb logcat -c
+adb shell am start -W -n "$activity"
 
 tap_labeled() {
   python3 - "$1" <<'PY'
@@ -70,6 +71,7 @@ adb shell dumpsys activity services com.spstan.tgwsproxy | grep -F 'isForeground
 tap_labeled 'Stop proxy|Остановить прокси'
 wait_log TgWsProxy 'StopProxy: done'
 
+echo 'Started and stopped with default WSS'
 tap_labeled 'Settings|Настройки'
 tap_labeled 'Disable TLS for CF proxy and CF Worker|Выключить TLS для CF-прокси и CF-worker'
 sleep 2
@@ -81,3 +83,4 @@ wait_log ProxyService 'Proxy ready: listening on port 1443'
 wait_log TgWsProxy 'CF WebSocket transport: WS :80'
 tap_labeled 'Stop proxy|Остановить прокси'
 wait_log TgWsProxy 'StopProxy: done'
+echo 'Cleartext WS preference survived a process restart'
