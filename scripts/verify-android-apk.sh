@@ -16,8 +16,7 @@ for so in "$tmp"/lib/arm64-v8a/*.so; do
   "$objdump" -p "$so" | awk '/LOAD/ {
     print
     n++
-    mark=index($NF,"^")
-    if (!mark || substr($NF,mark+1)+0 < 14) bad=1
+    if (substr($NF,1,3) != "2**" || substr($NF,4)+0 < 14) bad=1
   } END { exit (!n || bad) }'
 done
 (cd "$(dirname "$apk")"; sha256sum "$(basename "$apk")") | tee "$apk.sha256"
