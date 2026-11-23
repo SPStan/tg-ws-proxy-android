@@ -28,6 +28,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -210,8 +212,10 @@ fun SettingsTab(settingsStore: SettingsStore) {
 
         AppSectionCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.disable_cf_tls), modifier = Modifier.weight(1f))
+                val tlsLabel = stringResource(R.string.disable_cf_tls)
+                Text(tlsLabel, modifier = Modifier.weight(1f))
                 Switch(
+                    modifier = Modifier.semantics { contentDescription = tlsLabel },
                     checked = savedTransport.disableCfTls,
                     onCheckedChange = { disabled ->
                         scope.launch { settingsStore.saveDisableCfTls(disabled) }

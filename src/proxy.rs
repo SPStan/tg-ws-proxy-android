@@ -2195,9 +2195,7 @@ pub async fn run_proxy(
             CF_WORKER_DOMAINS.read().join(", ")
         );
     }
-    if !pools.cf_tls {
-        linfo!("  No secure:     enabled (port 80 for CF proxy/worker)");
-    }
+    linfo!("CF WebSocket transport: {}", if pools.cf_tls { "WSS :443" } else { "WS :80" });
     let masking = FAKE_TLS_DOMAIN.read().clone();
     if !masking.is_empty() {
         linfo!("  Fake TLS:      {}", masking);

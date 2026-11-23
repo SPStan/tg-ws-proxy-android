@@ -40,6 +40,11 @@ android {
                 abiFilters.add("arm64-v8a")
             }
         }
+        create("emulator") {
+            dimension = "arch"
+            minSdk = 24
+            ndk.abiFilters.add("x86_64")
+        }
         create("universal") {
             dimension = "arch"
             minSdk = 21

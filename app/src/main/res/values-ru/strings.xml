@@ -133,4 +133,6 @@
     <string name="fake_tls_domain">Маскирующий домен Fake TLS (необязательно)</string>
     <string name="save_transport_domains">Сохранить домены</string>
     <string name="transport_restart_required">Перезапустите прокси, чтобы применить сохранённые параметры транспорта.</string>
+    <string name="start_proxy">Запустить прокси</string>
+    <string name="stop_proxy">Остановить прокси</string>
 </resources>
