@@ -7,6 +7,10 @@ on:
         description: Build a release APK with the owner's signing key
         type: boolean
         default: false
+      emulator_16k:
+        description: Use the Android 17 emulator image with 16 KB pages
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -54,8 +58,11 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          test -n "$RELEASE_KEYSTORE_BASE64" && test -n "$KEYSTORE_PASSWORD" &&
-            test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          if [[ -z "$RELEASE_KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ||
+                -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "Configure all four Android signing secrets before requesting a signed release." >&2
+            exit 1
+          fi
           export KEYSTORE_FILE=$(mktemp)
           trap 'rm -f "$KEYSTORE_FILE"' EXIT
           printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
@@ -74,6 +81,9 @@ jobs:
   emulator:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      EMULATOR_IMAGE: ${{ inputs.emulator_16k && 'system-images;android-37.1;google_apis_ps16k;x86_64' || 'system-images;android-37.0;google_apis;x86_64' }}
+      EMULATOR_PAGE: ${{ inputs.emulator_16k && '16384' || '4096' }}
     defaults:
       run:
         shell: bash
@@ -90,30 +100,34 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/proxy-avd"
           echo "ANDROID_AVD_HOME=$RUNNER_TEMP/proxy-avd" >> "$GITHUB_ENV"
-      - name: Install Android 17 16 KB image and build x86_64 APK
+      - name: Install Android 17 image and build x86_64 APK
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup target add --toolchain 1.95.0 x86_64-linux-android
-          image='system-images;android-37.1;google_apis_ps16k;x86_64'
-          sdkmanager 'platforms;android-37.0' 'ndk;28.2.13676358' emulator "$image"
-          avdmanager create avd --name api37-16k --package "$image" --path "$ANDROID_AVD_HOME/api37-16k.avd" --force <<< no
-          ini=$(find "$ANDROID_AVD_HOME" "$HOME/.android" -maxdepth 3 -name api37-16k.ini -print -quit)
+          sdkmanager 'platforms;android-37.0' 'ndk;28.2.13676358' emulator "$EMULATOR_IMAGE"
+          avdmanager create avd --name api37 --package "$EMULATOR_IMAGE" --path "$ANDROID_AVD_HOME/api37.avd" --force <<< no
+          ini=$(find "$ANDROID_AVD_HOME" "$HOME/.android" -maxdepth 3 -name api37.ini -print -quit)
           test -n "$ini"
-          if [[ "$ini" != "$ANDROID_AVD_HOME/api37-16k.ini" ]]; then
+          if [[ "$ini" != "$ANDROID_AVD_HOME/api37.ini" ]]; then
             cp "$ini" "$ANDROID_AVD_HOME/"
           fi
-          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx api37-16k
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx api37
           bash scripts/build-android-native.sh x86_64
           java -classpath gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :app:assembleEmulatorDebug --no-daemon
       - name: Verify installation, proxy lifecycle and TLS preference
         run: |
           test -e /dev/kvm
           sudo chmod a+rw /dev/kvm
-          "$ANDROID_HOME/emulator/emulator" -avd api37-16k -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader > emulator.log 2>&1 &
+          adb start-server
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+          "$ANDROID_HOME/emulator/emulator" -avd api37 -port 5554 -cores 4 -memory 4096 \
+            -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -show-kernel > emulator.log 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
-          if ! timeout 150 adb wait-for-device; then
-            cat emulator.log
+          export ANDROID_SERIAL=emulator-5554
+          if ! timeout 240 adb wait-for-device; then
+            adb devices -l
+            tail -n 100 emulator.log
             exit 1
           fi
           bash scripts/smoke-android.sh app/build/outputs/apk/emulator/debug/app-emulator-debug.apk

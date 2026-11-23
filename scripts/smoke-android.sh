@@ -6,7 +6,9 @@ adb shell input keyevent 82
 adb shell getprop ro.build.id
 adb shell getprop ro.product.cpu.abilist
 test "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" = 37
-test "$(adb shell getconf PAGE_SIZE | tr -d '\r')" = 16384
+page_size=$(adb shell getconf PAGE_SIZE | tr -d '\r')
+echo "Page size: $page_size"
+test "$page_size" = "${EMULATOR_PAGE:-4096}"
 adb install -g "$1"
 
 activity=com.spstan.tgwsproxy/com.amurcanov.tgwsproxy.MainActivity

@@ -48,6 +48,8 @@ bash scripts/verify-android-apk.sh app/build/outputs/apk/arm64/debug/app-arm64-d
 
 Для последующих релизов загрузите постоянный ключ владельца в GitHub Actions Secrets. Workflow ожидает `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` и `ANDROID_KEY_PASSWORD`. Запустите Android workflow с параметром `sign_release`. Артефакт `arm64-release` содержит проверенный подписанный APK. Пробный APK подписан отладочным ключом CI. Переход с debug на APK с ключом владельца потребует удаления debug-версии приложения.
 
+Для проверки на эмуляторе CI собирает отдельный APK x86_64 под API 37. По умолчанию используется стандартный образ с размером страницы 4 КБ. Для образа 16 КБ запустите workflow вручную с параметром `emulator_16k`.
+
 ## Проверка на телефоне CP3A.261005.005
 
 ```bash
@@ -68,7 +70,7 @@ adb logcat -s ProxyService TgWsProxy AndroidRuntime
 
 ## Сверка с Flowseal
 
-[Flowseal v1.11.4](https://github.com/Flowseal/tg-ws-proxy/releases/tag/v1.11.4) — `2085861957070eeea07990a522b29f42e5230210`. [Архивная Android main](https://github.com/amurcanov/tg-ws-proxy-android/tree/540e588d15fbdf806f694fbe0b952ff044d39a07) — `540e588d15fbdf806f694fbe0b952ff044d39a07`, на 30 коммитов позже Android v1.2.3.
+[Flowseal v1.11.4](https://github.com/Flowseal/tg-ws-proxy/releases/tag/v1.11.4) — `2085861957070eeea07990a522b29f42e5230210`. [Архивная Android main](https://github.com/amurcanov/tg-ws-proxy-android/tree/540e588d15fbdf806f694fbe0b952ff044d39a07) — `540e588d15fbdf806f694fbe0b952ff044d39a07`, на 30 коммитов позже Android v1.2.3 (`1ded446e3e499d56b6ea2b53109a7b0845215d69`).
 
 | Функция Flowseal | Состояние Android-основы | Изменение | Проверка |
 | --- | --- | --- | --- |
