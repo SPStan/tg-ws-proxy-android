@@ -131,9 +131,13 @@
     <string name="disable_cf_tls_description">В режиме WS сетевому посреднику видны заголовки WebSocket. Выбранный сервер должен принимать WS на порту 80.</string>
     <string name="cf_worker_domains">Домены CF Worker через пробел</string>
     <string name="fake_tls_domain">Маскирующий домен Fake TLS (необязательно)</string>
-    <string name="save_transport_domains">Сохранить домены</string>
+    <string name="save_transport_domains">Сохранить параметры транспорта</string>
     <string name="transport_restart_required">Перезапустите прокси, чтобы применить сохранённые параметры транспорта.</string>
     <string name="start_proxy">Запустить прокси</string>
     <string name="stop_proxy">Остановить прокси</string>
     <string name="cf_h2_media">HTTP/2 для медиа через CF</string>
+    <string name="cf_proxy_domains">Домены CF-прокси (пусто для списка по умолчанию)</string>
+    <string name="socket_buffer_kb">Буфер сокета, КБ</string>
+    <string name="force_test_dc">Использовать тестовые DC Telegram</string>
+    <string name="proxy_protocol">Ожидать заголовок PROXY protocol v1</string>
 </resources>

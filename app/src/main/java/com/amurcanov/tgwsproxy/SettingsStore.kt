@@ -17,7 +17,11 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 data class TransportSettings(
     val disableCfTls: Boolean = false,
     val cfH2Media: Boolean = true,
+    val cfProxyDomains: String = "",
     val workerDomains: String = "",
+    val bufferKb: Int = 256,
+    val forceTestDc: Boolean = false,
+    val proxyProtocol: Boolean = false,
     val fakeTlsDomain: String = ""
 )
 
@@ -45,6 +49,9 @@ class SettingsStore(private val context: Context) {
         val POOL_SIZE = intPreferencesKey("pool_size")
         val CF_H2_MEDIA = booleanPreferencesKey("cf_h2_media")
         val DISABLE_CF_TLS = booleanPreferencesKey("disable_cf_tls")
+        val BUFFER_KB = intPreferencesKey("buffer_kb")
+        val FORCE_TEST_DC = booleanPreferencesKey("force_test_dc")
+        val PROXY_PROTOCOL = booleanPreferencesKey("proxy_protocol")
         val CF_WORKER_DOMAINS = stringPreferencesKey("cf_worker_domains")
         val FAKE_TLS_DOMAIN = stringPreferencesKey("fake_tls_domain")
         val CFPROXY_ENABLED = booleanPreferencesKey("cfproxy_enabled")
@@ -97,6 +104,14 @@ class SettingsStore(private val context: Context) {
         TransportSettings(
             cfH2Media = it[Keys.CF_H2_MEDIA] ?: true,
             disableCfTls = it[Keys.DISABLE_CF_TLS] ?: false,
+            cfProxyDomains = if (it[Keys.CUSTOM_CF_DOMAIN_ENABLED] == true) {
+                it[Keys.CUSTOM_CF_DOMAIN].orEmpty()
+            } else {
+                ""
+            },
+            bufferKb = it[Keys.BUFFER_KB] ?: 256,
+            forceTestDc = it[Keys.FORCE_TEST_DC] ?: false,
+            proxyProtocol = it[Keys.PROXY_PROTOCOL] ?: false,
             workerDomains = it[Keys.CF_WORKER_DOMAINS].orEmpty(),
             fakeTlsDomain = it[Keys.FAKE_TLS_DOMAIN].orEmpty()
         )
@@ -133,9 +148,18 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { it[Keys.DISABLE_CF_TLS] = disabled }
     }
 
-    suspend fun saveTransportDomains(workers: String, fakeTls: String) {
+    suspend fun saveTransportOptions(
+        domains: String, workers: String, fakeTls: String, bufferKb: Int,
+        forceTestDc: Boolean, proxyProtocol: Boolean
+    ) {
         context.dataStore.edit {
+            val cfDomains = domains.trim()
+            it[Keys.CUSTOM_CF_DOMAIN] = cfDomains
+            it[Keys.CUSTOM_CF_DOMAIN_ENABLED] = cfDomains.isNotEmpty()
             it[Keys.CF_WORKER_DOMAINS] = workers.trim()
+            it[Keys.BUFFER_KB] = bufferKb
+            it[Keys.FORCE_TEST_DC] = forceTestDc
+            it[Keys.PROXY_PROTOCOL] = proxyProtocol
             it[Keys.FAKE_TLS_DOMAIN] = fakeTls.trim()
         }
     }
@@ -225,7 +249,7 @@ class SettingsStore(private val context: Context) {
     suspend fun saveAll(isDcAuto: Boolean, dc1: String, dc2: String, dc3: String, dc4: String, dc5: String, dc203: String,
                         dc1m: String, dc2m: String, dc3m: String, dc4m: String, dc5m: String, dc203m: String,
                         isExperimental: Boolean, bindIp: String, port: String, poolSize: Int,
-                        cfproxyEnabled: Boolean, customCfDomainEnabled: Boolean, customCfDomain: String, secretKey: String) {
+                        cfproxyEnabled: Boolean, secretKey: String) {
         context.dataStore.edit {
             it[Keys.IS_DC_AUTO] = isDcAuto
             it[Keys.DC1] = dc1
@@ -245,8 +269,6 @@ class SettingsStore(private val context: Context) {
             it[Keys.PORT] = port
             it[Keys.POOL_SIZE] = poolSize
             it[Keys.CFPROXY_ENABLED] = cfproxyEnabled
-            it[Keys.CUSTOM_CF_DOMAIN_ENABLED] = customCfDomainEnabled
-            it[Keys.CUSTOM_CF_DOMAIN] = customCfDomain
             it[Keys.SECRET_KEY] = secretKey
         }
     }

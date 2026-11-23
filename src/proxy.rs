@@ -2255,7 +2255,15 @@ pub async fn run_proxy(
         *m = dc_opt_map.clone();
     }
 
-    start_cfproxy_refresh();
+    if CFPROXY_ENABLED.load(Ordering::Relaxed) && CFPROXY.read().user_domain.is_empty() {
+        let cancel = cancel_root.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                _ = refresh_cfproxy_domains_periodically() => {}
+            }
+        });
+    }
 
     {
         let p = pools.clone();

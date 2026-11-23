@@ -16,7 +16,7 @@ object ProxyController {
         settingsStore.migrateLegacyDefaults()
         val portText = settingsStore.port.first()
         val port = portText.toIntOrNull()
-        if (port == null) {
+        if (port == null || port !in 1..65535) {
             if (showInvalidPortToast) {
                 Toast.makeText(context, context.getString(R.string.invalid_port), Toast.LENGTH_SHORT).show()
             }
@@ -29,8 +29,6 @@ object ProxyController {
         val isDcAuto = settingsStore.isDcAuto.first()
         val poolSize = settingsStore.poolSize.first()
         val cfEnabled = settingsStore.cfproxyEnabled.first()
-        val customCfDomainEnabled = settingsStore.customCfDomainEnabled.first()
-        val customCfDomain = settingsStore.customCfDomain.first().trim()
         val secretKey = ensureSecretKey(settingsStore)
 
         val parsedIps = buildList {
@@ -62,11 +60,6 @@ object ProxyController {
                 putExtra(ProxyService.EXTRA_IPS, parsedIps)
                 putExtra(ProxyService.EXTRA_POOL_SIZE, poolSize)
                 putExtra(ProxyService.EXTRA_CFPROXY_ENABLED, cfEnabled)
-                putExtra(ProxyService.EXTRA_CFPROXY_PRIORITY, true)
-                putExtra(
-                    ProxyService.EXTRA_CFPROXY_DOMAIN,
-                    if (customCfDomainEnabled && cfEnabled) customCfDomain else ""
-                )
                 putExtra(ProxyService.EXTRA_SECRET_KEY, secretKey)
             }
         )

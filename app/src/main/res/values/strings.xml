@@ -131,9 +131,13 @@
     <string name="disable_cf_tls_description">WS exposes WebSocket headers to network intermediaries. The selected server must accept WS over port 80.</string>
     <string name="cf_worker_domains">CF Worker domains separated by spaces</string>
     <string name="fake_tls_domain">Fake TLS masking domain (optional)</string>
-    <string name="save_transport_domains">Save domains</string>
+    <string name="save_transport_domains">Save transport options</string>
     <string name="transport_restart_required">Restart the proxy to apply the saved transport settings.</string>
     <string name="start_proxy">Start proxy</string>
     <string name="stop_proxy">Stop proxy</string>
     <string name="cf_h2_media">HTTP/2 for CF media</string>
+    <string name="cf_proxy_domains">CF proxy domains (blank for defaults)</string>
+    <string name="socket_buffer_kb">Socket buffer in KB</string>
+    <string name="force_test_dc">Force test Telegram DCs</string>
+    <string name="proxy_protocol">Expect PROXY protocol v1 from upstream</string>
 </resources>

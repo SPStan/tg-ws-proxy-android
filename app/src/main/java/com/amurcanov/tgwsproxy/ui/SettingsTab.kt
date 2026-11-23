@@ -75,6 +75,18 @@ fun SettingsTab(settingsStore: SettingsStore) {
     val savedTransport by settingsStore.transportSettings.collectAsStateWithLifecycle(
         initialValue = TransportSettings()
     )
+    var cfDomains by rememberSaveable(savedTransport.cfProxyDomains) {
+        mutableStateOf(savedTransport.cfProxyDomains)
+    }
+    var bufferKb by rememberSaveable(savedTransport.bufferKb) {
+        mutableStateOf(savedTransport.bufferKb.toString())
+    }
+    var forceTestDc by rememberSaveable(savedTransport.forceTestDc) {
+        mutableStateOf(savedTransport.forceTestDc)
+    }
+    var proxyProtocol by rememberSaveable(savedTransport.proxyProtocol) {
+        mutableStateOf(savedTransport.proxyProtocol)
+    }
     var workerDomains by rememberSaveable(savedTransport.workerDomains) {
         mutableStateOf(savedTransport.workerDomains)
     }
@@ -102,8 +114,6 @@ fun SettingsTab(settingsStore: SettingsStore) {
     val savedBindIp by settingsStore.bindIp.collectAsStateWithLifecycle(initialValue = "127.0.0.1")
     val savedPoolSize by settingsStore.poolSize.collectAsStateWithLifecycle(initialValue = 4)
     val savedCfEnabled by settingsStore.cfproxyEnabled.collectAsStateWithLifecycle(initialValue = true)
-    val savedCustomDomainEnabled by settingsStore.customCfDomainEnabled.collectAsStateWithLifecycle(initialValue = false)
-    val savedCustomDomain by settingsStore.customCfDomain.collectAsStateWithLifecycle(initialValue = "")
     val autoStartOnBoot by settingsStore.autoStartOnBoot.collectAsStateWithLifecycle(initialValue = false)
     val savedSecretKey by settingsStore.secretKey.collectAsStateWithLifecycle(initialValue = "LOADING")
 
@@ -137,8 +147,6 @@ fun SettingsTab(settingsStore: SettingsStore) {
     var bindIpText by rememberSaveable(savedBindIp) { mutableStateOf(savedBindIp) }
     var selectedPoolSize by rememberSaveable(savedPoolSize) { mutableIntStateOf(savedPoolSize) }
     var cfEnabled by rememberSaveable(savedCfEnabled) { mutableStateOf(savedCfEnabled) }
-    var customCfDomainEnabled by rememberSaveable(savedCustomDomainEnabled) { mutableStateOf(savedCustomDomainEnabled) }
-    var customCfDomain by rememberSaveable(savedCustomDomain) { mutableStateOf(savedCustomDomain) }
     var secretKeyText by remember(savedSecretKey) { mutableStateOf(if (savedSecretKey == "LOADING") "" else savedSecretKey) }
 
     LaunchedEffect(savedSecretKey) {
@@ -161,7 +169,7 @@ fun SettingsTab(settingsStore: SettingsStore) {
                 isDcAuto, dc1Text, dc2Text, dc3Text, dc4Text, dc5Text, dc203Text,
                 dc1mText, dc2mText, dc3mText, dc4mText, dc5mText, dc203mText,
                 experimentalMode, bindIpText, portText, selectedPoolSize,
-                cfEnabled, customCfDomainEnabled, customCfDomain, secretKeyText
+                cfEnabled, secretKeyText
             )
         }
     }
@@ -234,6 +242,13 @@ fun SettingsTab(settingsStore: SettingsStore) {
                 )
             }
             OutlinedTextField(
+                value = cfDomains,
+                onValueChange = { cfDomains = it },
+                label = { Text(stringResource(R.string.cf_proxy_domains)) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            OutlinedTextField(
                 value = workerDomains,
                 onValueChange = { workerDomains = it },
                 label = { Text(stringResource(R.string.cf_worker_domains)) },
@@ -247,12 +262,42 @@ fun SettingsTab(settingsStore: SettingsStore) {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+            if (experimentalMode) {
+                OutlinedTextField(
+                    value = bufferKb,
+                    onValueChange = { bufferKb = it.filter(Char::isDigit) },
+                    label = { Text(stringResource(R.string.socket_buffer_kb)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.force_test_dc), modifier = Modifier.weight(1f))
+                    Switch(checked = forceTestDc, onCheckedChange = { forceTestDc = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.proxy_protocol), modifier = Modifier.weight(1f))
+                    Switch(checked = proxyProtocol, onCheckedChange = { proxyProtocol = it })
+                }
+            }
+            val buffer = bufferKb.toIntOrNull()
             val validDomain = fakeTlsDomain.isBlank() ||
                 fakeTlsDomain.trim().matches(Regex("[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+"))
             TextButton(
-                enabled = validDomain && (workerDomains.trim() != savedTransport.workerDomains ||
-                    fakeTlsDomain.trim() != savedTransport.fakeTlsDomain),
-                onClick = { scope.launch { settingsStore.saveTransportDomains(workerDomains, fakeTlsDomain) } }
+                enabled = validDomain && buffer != null && buffer in 4..4096 && (
+                    cfDomains.trim() != savedTransport.cfProxyDomains ||
+                    workerDomains.trim() != savedTransport.workerDomains ||
+                    fakeTlsDomain.trim() != savedTransport.fakeTlsDomain ||
+                    buffer != savedTransport.bufferKb ||
+                    forceTestDc != savedTransport.forceTestDc ||
+                    proxyProtocol != savedTransport.proxyProtocol
+                ),
+                onClick = {
+                    if (buffer != null) scope.launch {
+                        settingsStore.saveTransportOptions(cfDomains, workerDomains, fakeTlsDomain,
+                            buffer, forceTestDc, proxyProtocol)
+                    }
+                }
             ) {
                 Text(stringResource(R.string.save_transport_domains))
             }

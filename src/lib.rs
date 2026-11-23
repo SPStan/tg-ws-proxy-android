@@ -232,9 +232,9 @@ pub unsafe extern "C" fn SetCfProxyConfig(
     CFPROXY_ENABLED.store(enabled != 0, Ordering::Relaxed);
     let user_domain = cstr_to_string(c_user_domain);
     // Поддержка нескольких доменов как --cfproxy-domain (repeatable).
-    let list = coerce_domain_list_str(&user_domain);
+    let list = normalize_domain_pool(&coerce_domain_list_str(&user_domain));
     let mut cfg = CFPROXY.write();
-    cfg.user_domain = user_domain.trim().to_string();
+    cfg.user_domain = list.join(" ");
     if !list.is_empty() {
         cfg.domains = list.clone();
         cfg.active = list[0].clone();
@@ -249,7 +249,7 @@ pub unsafe extern "C" fn SetCfProxyConfig(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SetCfWorkerDomains(c_domains: *const c_char) {
     let raw = cstr_to_string(c_domains);
-    *CF_WORKER_DOMAINS.write() = coerce_domain_list_str(&raw);
+    *CF_WORKER_DOMAINS.write() = normalize_domain_pool(&coerce_domain_list_str(&raw));
 }
 
 /// # Safety

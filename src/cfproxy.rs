@@ -279,8 +279,7 @@ pub fn init_cfproxy_domains() {
 
     let mut cfg = CFPROXY.write();
     if !cfg.user_domain.is_empty() {
-        let ud = cfg.user_domain.clone();
-        cfg.domains = vec![ud.clone()];
+        cfg.domains = coerce_domain_list_str(&cfg.user_domain);
         crate::balancer::BALANCER.write().update_domains_list(&cfg.domains);
         return;
     }
@@ -297,30 +296,28 @@ pub fn init_cfproxy_domains() {
     }
 }
 
-pub fn start_cfproxy_refresh() {
+pub async fn refresh_cfproxy_domains_periodically() {
     // Порт proxy/config.py::start_cfproxy_domain_refresh: сначала пробуем
     // обновить сразу (до 3 попыток), затем раз в час фоновым таском.
     // На мобиле уважаем свежесть дискового кеша для первой попытки.
     if !should_refresh_cfproxy_domains() {
         ldebug!(" CF: кеш свежий, откладываю обновление списка на час");
     }
-    tokio::spawn(async move {
-        if should_refresh_cfproxy_domains() {
-            for _ in 0..3 {
-                if try_refresh_cfproxy_domains().await {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_secs(10)).await;
+    if should_refresh_cfproxy_domains() {
+        for _ in 0..3 {
+            if try_refresh_cfproxy_domains().await {
+                break;
             }
-            if CFPROXY.read().domains.is_empty() {
-                ldebug!(" CF: обновить список доменов не удалось, остаюсь на кеше/встроенном списке");
-            }
+            tokio::time::sleep(Duration::from_secs(10)).await;
         }
-        loop {
-            tokio::time::sleep(CFPROXY_REFRESH_INTERVAL).await;
-            try_refresh_cfproxy_domains().await;
+        if CFPROXY.read().domains.is_empty() {
+            ldebug!(" CF: обновить список доменов не удалось, остаюсь на кеше/встроенном списке");
         }
-    });
+    }
+    loop {
+        tokio::time::sleep(CFPROXY_REFRESH_INTERVAL).await;
+        try_refresh_cfproxy_domains().await;
+    }
 }
 
 pub async fn try_refresh_cfproxy_domains() -> bool {
