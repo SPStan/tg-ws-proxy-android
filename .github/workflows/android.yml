@@ -20,7 +20,7 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup target add --toolchain 1.95.0 aarch64-linux-android
-          sdkmanager 'platforms;android-37' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;28.2.13676358'
       - name: Test Rust core
         run: cargo +1.95.0 test --locked
       - name: Build Rust and APK
@@ -54,5 +54,4 @@ jobs:
             app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
             app/build/outputs/apk/arm64/debug/app-arm64-debug.apk.sha256
           if-no-files-found: error
-
 

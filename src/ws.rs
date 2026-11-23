@@ -957,3 +957,7 @@ pub async fn connect_fronted(ip: &str, domain: &str, path: &str) -> Option<RawWe
         Err(_) => None,
     }
 }
+
+#[cfg(test)]
+#[path = "ws_tests.rs"]
+mod tests;
