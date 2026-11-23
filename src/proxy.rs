@@ -526,15 +526,17 @@ pub struct CfWorkerPool {
     refilling: Mutex<HashSet<i32>>,
     exhausted_until: Mutex<HashMap<String, f64>>,
     cancel_token: CancellationToken,
+    tls: bool,
 }
 
 impl CfWorkerPool {
-    pub fn new(cancel_token: CancellationToken) -> CfWorkerPool {
+    pub fn new(cancel_token: CancellationToken, tls: bool) -> CfWorkerPool {
         CfWorkerPool {
             idle: Mutex::new(HashMap::new()),
             refilling: Mutex::new(HashSet::new()),
             exhausted_until: Mutex::new(HashMap::new()),
             cancel_token,
+            tls,
         }
     }
 
@@ -571,7 +573,7 @@ impl CfWorkerPool {
                     e.worker_domain,
                     now - e.created
                 );
-                self.schedule_refill(dc, fallback_dst, worker_domains).await;
+                self.refill_now(dc, fallback_dst, worker_domains).await;
                 Some((e.ws, e.worker_domain))
             }
             None => {
@@ -579,18 +581,6 @@ impl CfWorkerPool {
                 None
             }
         }
-    }
-
-    async fn schedule_refill(&self, dc: i32, fallback_dst: String, worker_domains: Vec<String>) {
-        {
-            let mut r = self.refilling.lock().await;
-            if r.contains(&dc) {
-                return;
-            }
-            r.insert(dc);
-        }
-        // PER_DC_LIMIT уважаем через проверку размера в refill.
-        let _ = (fallback_dst, worker_domains);
     }
 
     pub async fn refill_now(
@@ -614,7 +604,6 @@ impl CfWorkerPool {
         let pool = self.clone();
         let cancel = self.cancel_token.clone();
         tokio::spawn(async move {
-            let _cancel = cancel;
             {
                 let map = pool.idle.lock().await;
                 let cur = map.get(&dc).map(|b| b.len()).unwrap_or(0);
@@ -623,10 +612,12 @@ impl CfWorkerPool {
                     return;
                 }
             }
-            if let Some((ws, domain)) = pool
-                .connect_one(worker_domains.clone(), fallback_dst.clone(), dc)
-                .await
-            {
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                result = pool.connect_one(worker_domains, fallback_dst, dc) => result,
+            };
+            if let Some((ws, domain)) = result {
                 let mut map = pool.idle.lock().await;
                 map.entry(dc)
                     .or_insert_with(VecDeque::new)
@@ -647,11 +638,10 @@ impl CfWorkerPool {
         fallback_dst: String,
         dc: i32,
     ) -> Option<(RawWebSocket, String)> {
-        let secure = !DISABLE_SECURE.load(Ordering::Relaxed);
         let query = format!("dst={}&dc={}", fallback_dst, dc);
         let path = format!("/apiws?{}", query);
         for worker_domain in self.available_domains(worker_domains).await {
-            match ws_connect_full_opts(&worker_domain, &worker_domain, &path, 8.0, None, Some(secure))
+            match ws_connect_full_opts(&worker_domain, &worker_domain, &path, 8.0, None, WsRoute::Cloudflare { tls: self.tls })
                 .await
             {
                 Ok(ws) => return Some((ws, worker_domain)),
@@ -742,13 +732,16 @@ impl CfWorkerPool {
 pub struct ProxyPools {
     pub ws: Arc<WsPool>,
     pub cf_worker: Arc<CfWorkerPool>,
+    cf_tls: bool,
 }
 
 impl ProxyPools {
     pub fn new(cancel_token: CancellationToken) -> Self {
+        let cf_tls = !DISABLE_SECURE.load(Ordering::Relaxed);
         ProxyPools {
+            cf_tls,
             ws: Arc::new(WsPool::new(cancel_token.clone())),
-            cf_worker: Arc::new(CfWorkerPool::new(cancel_token)),
+            cf_worker: Arc::new(CfWorkerPool::new(cancel_token, cf_tls)),
         }
     }
 
@@ -1204,6 +1197,7 @@ async fn try_cfproxy_base_domain(
     dc: i32,
     base_domain: &str,
     ws_path: &str,
+    tls: bool,
 ) -> (Option<RawWebSocket>, String) {
     let base_domain = normalize_cf_domain(base_domain);
     if base_domain.is_empty() {
@@ -1226,7 +1220,7 @@ async fn try_cfproxy_base_domain(
     let domain = format!("kws{}.{}", dc, base_domain);
     ldebug!(" CF try {}", domain);
 
-    let (ws, resolved_ip, err) = cf_connect_domain(&domain, ws_path, 5.0).await;
+    let (ws, resolved_ip, err) = cf_connect_domain(&domain, ws_path, 5.0, tls).await;
     if let Some(e) = err {
         // Cooldown ставим ТОЛЬКО при HTTP 429, иначе любой reset/timeout
         // выжигал бы домены и плодил лавину cooldown.
@@ -1259,6 +1253,7 @@ async fn cfproxy_acquire_ws(
     is_media: bool,
     ws_path: &str,
     cancel_token: &CancellationToken,
+    tls: bool,
 ) -> Option<(RawWebSocket, String)> {
     let (enabled, domains) = {
         let cfg = CFPROXY.read();
@@ -1283,7 +1278,7 @@ async fn cfproxy_acquire_ws(
     let mut chosen_domain = String::new();
 
     if !ordered.is_empty() && !ordered[0].is_empty() {
-        let (w, d) = try_cfproxy_base_domain(dc, &ordered[0], ws_path).await;
+        let (w, d) = try_cfproxy_base_domain(dc, &ordered[0], ws_path, tls).await;
         ws = w;
         chosen_domain = d;
     }
@@ -1301,7 +1296,7 @@ async fn cfproxy_acquire_ws(
                     _ = cancel.cancelled() => None,
                     r = async {
                         let _p = sem.acquire().await.ok()?;
-                        let (w, d) = try_cfproxy_base_domain(dc, &bd, &ws_path).await;
+                        let (w, d) = try_cfproxy_base_domain(dc, &bd, &ws_path, tls).await;
                         w.map(|ws| (ws, d))
                     } => r,
                 }
@@ -1369,15 +1364,16 @@ where
     let use_cf = CFPROXY_ENABLED.load(Ordering::Relaxed) && !is_test;
     let worker_domains = CF_WORKER_DOMAINS.read().clone();
     let ws_path = ws_path_for(is_test);
-    let secure_port = if DISABLE_SECURE.load(Ordering::Relaxed) { 80 } else { 443 };
-    let use_worker = !worker_domains.is_empty() && !fallback_dst.is_empty() && !is_test;
+    let direct_tcp_port = 443;
+    let use_worker = !worker_domains.is_empty() && !fallback_dst.is_empty();
 
     // Шаг 1: worker-ws (без halves) — порт _cfproxy_worker_fallback.
     if use_worker {
-        let pooled = pools
-            .cf_worker
-            .get(dc, fallback_dst.clone(), worker_domains.clone())
-            .await;
+        let pooled = if is_test {
+            None
+        } else {
+            pools.cf_worker.get(dc, fallback_dst.clone(), worker_domains.clone()).await
+        };
         let worker_ws = if let Some((ws, worker_domain)) = pooled {
             linfo!(
                 "[{}] DC{}{} -> CF worker pool hit via {} for {}",
@@ -1385,7 +1381,6 @@ where
             );
             Some(ws)
         } else {
-            let secure = !DISABLE_SECURE.load(Ordering::Relaxed);
             let query = format!("dst={}&dc={}", fallback_dst, dc);
             let path = format!("/apiws?{}", query);
             let mut found = None;
@@ -1400,7 +1395,7 @@ where
                     &path,
                     10.0,
                     None,
-                    Some(secure),
+                    WsRoute::Cloudflare { tls: pools.cf_tls },
                 )
                 .await
                 {
@@ -1416,6 +1411,9 @@ where
                         );
                     }
                 }
+            }
+            if !is_test {
+                pools.cf_worker.refill_now(dc, fallback_dst.clone(), worker_domains).await;
             }
             found
         };
@@ -1447,7 +1445,7 @@ where
     // Шаг 2: cf-ws (без halves).
     if use_cf {
         if let Some((ws, _chosen_domain)) =
-            cfproxy_acquire_ws(dc, is_media, ws_path, &cancel_token).await
+            cfproxy_acquire_ws(dc, is_media, ws_path, &cancel_token, pools.cf_tls).await
         {
             STATS.connections_cfproxy.fetch_add(1, Ordering::Relaxed);
             linfo!(" DC{}{} подключен через CF", dc, m_tag);
@@ -1480,13 +1478,13 @@ where
     if !fallback_dst.is_empty() {
         linfo!(
             "[{}] DC{}{} -> TCP fallback to {}:{}",
-            label, dc, m_tag, fallback_dst, secure_port
+            label, dc, m_tag, fallback_dst, direct_tcp_port
         );
         return tcp_fallback(
             conn_read,
             conn_write,
             &fallback_dst,
-            secure_port,
+            direct_tcp_port,
             relay_init,
             label,
             (
@@ -1872,7 +1870,7 @@ async fn serve_core<R, W>(
         for domain in &domains {
             let url = format!("wss://{}{} via {}", domain, ws_path, target);
             linfo!("[{}] DC{}{} -> {}", label, dc, m_tag, url);
-            match ws_connect_full_opts(&target, domain, ws_path, ws_timeout, None, None).await {
+            match ws_connect_full_opts(&target, domain, ws_path, ws_timeout, None, WsRoute::Telegram).await {
                 Ok(ws) => {
                     all_redirects = false;
                     ws_opt = Some(ws);
@@ -2093,7 +2091,7 @@ pub async fn connect_direct_ws(
     let mut all_redirects = true;
 
     for dom in domains {
-        match ws_connect_full_opts(target, dom, ws_path, timeout, None, None).await {
+        match ws_connect_full_opts(target, dom, ws_path, timeout, None, WsRoute::Telegram).await {
             Ok(ws) => return (Some(ws), ws_failed_redirect, false),
             Err(WsError::Handshake(h)) => {
                 STATS.ws_errors.fetch_add(1, Ordering::Relaxed);
@@ -2164,7 +2162,7 @@ pub async fn run_proxy(
             CF_WORKER_DOMAINS.read().join(", ")
         );
     }
-    if DISABLE_SECURE.load(Ordering::Relaxed) {
+    if !pools.cf_tls {
         linfo!("  No secure:     enabled (port 80 for CF proxy/worker)");
     }
     if !FAKE_TLS_DOMAIN.read().is_empty() {

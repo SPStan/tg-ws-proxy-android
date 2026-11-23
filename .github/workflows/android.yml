@@ -20,7 +20,9 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup target add --toolchain 1.95.0 aarch64-linux-android
-          sdkmanager 'platforms;android-35' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          sdkmanager 'platforms;android-37' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+      - name: Test Rust core
+        run: cargo +1.95.0 test --locked
       - name: Build Rust and APK
         run: |
           ndk="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -30,10 +32,27 @@ jobs:
           cargo +1.95.0 build --locked --release --target aarch64-linux-android
           install -D target/aarch64-linux-android/release/libtgwsproxy.so app/src/main/jniLibs/arm64-v8a/libtgwsproxy.so
           java -classpath gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :app:assembleArm64Debug --no-daemon
+      - name: Verify APK signature and 16 KB alignment
+        run: |
+          apk=app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          "$tools/apksigner" verify --print-certs "$apk"
+          "$tools/zipalign" -c -P 16 -v 4 "$apk"
+          tmp=$(mktemp -d)
+          unzip -q "$apk" 'lib/arm64-v8a/*.so' -d "$tmp"
+          test -f "$tmp/lib/arm64-v8a/libtgwsproxy.so"
+          test -f "$tmp/lib/arm64-v8a/libjnidispatch.so"
+          objdump="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump"
+          for so in "$tmp"/lib/arm64-v8a/*.so; do
+            "$objdump" -p "$so" | awk '/LOAD/ { n++; split($NF,a,"\^"); if (a[2]+0 < 14) bad=1 } END { exit (!n || bad) }'
+          done
+          sha256sum "$apk" | tee "$apk.sha256" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: arm64-debug
-          path: app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
+          path: |
+            app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
+            app/build/outputs/apk/arm64/debug/app-arm64-debug.apk.sha256
           if-no-files-found: error
 
 

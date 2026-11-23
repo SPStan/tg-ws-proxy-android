@@ -1,5 +1,5 @@
 use crate::config::*;
-use crate::ws::{is_http_status_error, ws_connect_once, RawWebSocket, WsError};
+use crate::ws::{is_http_status_error, ws_connect_once_full, RawWebSocket, WsError, WsRoute};
 use crate::{ldebug, lerror, linfo, lwarn};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -579,6 +579,7 @@ pub async fn cf_connect_domain(
     domain: &str,
     path: &str,
     timeout: f64,
+    tls: bool,
 ) -> (Option<RawWebSocket>, String, Option<WsError>) {
     let path = if path.is_empty() { "/apiws" } else { path };
 
@@ -588,11 +589,12 @@ pub async fn cf_connect_domain(
         phase_timeout = CFPROXY_DIAL_PHASE_TIMEOUT;
     }
 
+    let route = WsRoute::Cloudflare { tls };
     let host_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
-    match ws_connect_once(domain, domain, path, host_timeout).await {
+    match ws_connect_once_full(domain, domain, path, host_timeout, None, route).await {
         Ok(ws) => return (Some(ws), String::new(), None),
         Err(host_err) => {
-            if is_http_status_error(&host_err, 429) {
+            if host_err.handshake().is_some() {
                 return (None, String::new(), Some(host_err));
             }
             let resolved_ip = resolve_doh(domain).await.unwrap_or_default();
@@ -602,7 +604,7 @@ pub async fn cf_connect_domain(
             }
             ldebug!(" CF DNS {} -> {}", domain, resolved_ip);
             let ip_timeout = new_timed_attempt_timeout(phase_timeout, phase_timeout);
-            match ws_connect_once(&resolved_ip, domain, path, ip_timeout).await {
+            match ws_connect_once_full(&resolved_ip, domain, path, ip_timeout, None, route).await {
                 Ok(ws) => (Some(ws), resolved_ip, None),
                 Err(e) => (None, resolved_ip, Some(e)),
             }

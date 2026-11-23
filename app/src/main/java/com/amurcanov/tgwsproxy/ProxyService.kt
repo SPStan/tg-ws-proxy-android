@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlin.time.Duration.Companion.milliseconds
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -73,6 +74,8 @@ class ProxyService : Service() {
         val isRunning: StateFlow<Boolean> = _isRunning
         private val _isVerifiedRunning = MutableStateFlow(false)
         val isVerifiedRunning: StateFlow<Boolean> = _isVerifiedRunning
+        private val _activeTransportSettings = MutableStateFlow(TransportSettings())
+        val activeTransportSettings: StateFlow<TransportSettings> = _activeTransportSettings
     }
 
     override fun onCreate() {
@@ -163,7 +166,7 @@ class ProxyService : Service() {
         acquireWakeLock()
         stopInProgress = false
         
-        // Start Go proxy in a separate thread with error handling
+        // Start the Rust proxy without blocking the service main thread
         Thread({
             val canObtainPort = isPortAvailable(bindIp, port)
             if (!canObtainPort) {
@@ -177,6 +180,10 @@ class ProxyService : Service() {
             }
 
             try {
+                val transport = runBlocking { SettingsStore(applicationContext).transportSettings.first() }
+                NativeProxy.setDisableSecure(transport.disableCfTls)
+                NativeProxy.setCfWorkerDomains(transport.workerDomains)
+                NativeProxy.setFakeTlsDomain(transport.fakeTlsDomain)
                 NativeProxy.setPoolSize(poolSize)
                 NativeProxy.setCfProxyCacheDir(cacheDir.absolutePath)
                 NativeProxy.setCfProxyConfig(cfEnabled, cfPriority, cfDomain)
@@ -184,6 +191,7 @@ class ProxyService : Service() {
                 if (result == 0) {
                     serviceScope.launch {
                         if (!stopInProgress) {
+                            _activeTransportSettings.value = transport
                             updateRunningState(true)
                             _isVerifiedRunning.value = true
                             updateNotification(getString(R.string.notification_running), force = true)

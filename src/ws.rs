@@ -5,7 +5,7 @@ use base64::Engine;
 use byteorder::{BigEndian, ByteOrder};
 use rand::RngCore;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+use rustls::{ClientConfig, RootCertStore, DigitallySignedStruct, SignatureScheme};
 use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -132,7 +132,10 @@ impl WsError {
         match self {
             WsError::Canceled => "canceled".to_string(),
             WsError::Timeout => "timeout".to_string(),
-            WsError::Handshake(h) => format!("http {}", h.status_code),
+            WsError::Handshake(h) if h.is_redirect() && h.location.starts_with("https://") => {
+                format!("HTTP {}: server redirects to HTTPS", h.status_code)
+            }
+            WsError::Handshake(h) => format!("HTTP {}", h.status_code),
             WsError::Io(e) => {
                 if e.kind() == std::io::ErrorKind::TimedOut
                     || e.kind() == std::io::ErrorKind::WouldBlock
@@ -765,16 +768,35 @@ async fn read_line<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<String, Ws
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
-// wsConnectOnce — заголовки 1-в-1 как в Python raw_websocket.py (без User-Agent).
-pub async fn ws_connect_once(
-    dial_addr: &str,
-    domain: &str,
-    path: &str,
-    timeout: Duration,
-) -> Result<RawWebSocket, WsError> {
-    let secure = !DISABLE_SECURE.load(Ordering::Relaxed);
-    ws_connect_once_full(dial_addr, domain, path, timeout, None, secure).await
+#[derive(Clone, Copy)]
+pub enum WsRoute {
+    Telegram,
+    Cloudflare { tls: bool },
 }
+
+impl WsRoute {
+    fn secure(self) -> bool {
+        !matches!(self, Self::Cloudflare { tls: false })
+    }
+
+    fn port(self) -> u16 {
+        if self.secure() { 443 } else { 80 }
+    }
+
+    fn tls_config(self) -> Arc<ClientConfig> {
+        match self {
+            Self::Telegram => TLS_CONFIG.clone(),
+            Self::Cloudflare { .. } => CF_TLS_CONFIG.clone(),
+        }
+    }
+}
+
+static CF_TLS_CONFIG: Lazy<Arc<ClientConfig>> = Lazy::new(|| {
+    let roots = RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    Arc::new(ClientConfig::builder().with_root_certificates(roots).with_no_client_auth())
+});
 
 pub async fn ws_connect_once_full(
     dial_addr: &str,
@@ -782,38 +804,39 @@ pub async fn ws_connect_once_full(
     path: &str,
     timeout: Duration,
     sni: Option<&str>,
-    secure: bool,
+    route: WsRoute,
 ) -> Result<RawWebSocket, WsError> {
     if dial_addr.is_empty() {
         return Err(WsError::Other("empty dial address".to_string()));
     }
     let path = if path.is_empty() { WS_PATH } else { path };
-    let target_addr = if secure {
-        format!("{}:443", dial_addr)
-    } else {
-        format!("{}:80", dial_addr)
-    };
+    connect_endpoint(dial_addr, route.port(), domain, path, timeout, sni,
+                     route.secure().then(|| route.tls_config())).await
+}
 
-    let raw_conn = match tokio::time::timeout(timeout, TcpStream::connect(&target_addr)).await {
+async fn connect_endpoint(
+    dial_addr: &str,
+    port: u16,
+    domain: &str,
+    path: &str,
+    timeout: Duration,
+    sni: Option<&str>,
+    tls: Option<Arc<ClientConfig>>,
+) -> Result<RawWebSocket, WsError> {
+    let raw_conn = match tokio::time::timeout(timeout, TcpStream::connect((dial_addr, port))).await {
         Ok(Ok(c)) => c,
         Ok(Err(e)) => return Err(WsError::Io(e)),
         Err(_) => return Err(WsError::Timeout),
     };
     set_sock_opts(&raw_conn);
 
-    if !secure {
+    let Some(config) = tls else {
         let (read_half, write_half) = tokio::io::split(raw_conn);
         return handshake_plain(read_half, write_half, domain, path, timeout).await;
-    }
+    };
 
     let sni_name = sni.unwrap_or(domain);
-    let use_fronting = sni.is_some();
-    let cfg = if use_fronting {
-        TLS_CONFIG_FRONTING.clone()
-    } else {
-        TLS_CONFIG.clone()
-    };
-    let connector = TlsConnector::from(cfg);
+    let connector = TlsConnector::from(config);
     let sni_server = server_name(sni_name);
 
     let handshake_timeout = ws_handshake_timeout(timeout);
@@ -837,26 +860,16 @@ pub async fn ws_connect_once_full(
 }
 
 // wsConnect: пытается ip, при необходимости резолвит DoH
-pub async fn ws_connect(
-    ip: &str,
-    domain: &str,
-    path: &str,
-    timeout: f64,
-) -> Result<RawWebSocket, WsError> {
-    ws_connect_full_opts(ip, domain, path, timeout, None, None).await
-}
-
 pub async fn ws_connect_full_opts(
     ip: &str,
     domain: &str,
     path: &str,
     timeout: f64,
     sni: Option<&str>,
-    secure_opt: Option<bool>,
+    route: WsRoute,
 ) -> Result<RawWebSocket, WsError> {
     let path = if path.is_empty() { WS_PATH } else { path };
     let attempt_timeout = ws_connect_timeout(timeout);
-    let secure = secure_opt.unwrap_or(!DISABLE_SECURE.load(Ordering::Relaxed));
 
     let primary_addr = if ip.trim().is_empty() {
         domain.to_string()
@@ -864,7 +877,7 @@ pub async fn ws_connect_full_opts(
         ip.trim().to_string()
     };
 
-    match ws_connect_once_full(&primary_addr, domain, path, attempt_timeout, sni, secure).await {
+    match ws_connect_once_full(&primary_addr, domain, path, attempt_timeout, sni, route).await {
         Ok(ws) => return Ok(ws),
         Err(e) => {
             if primary_addr == domain && primary_addr.parse::<IpAddr>().is_err() {
@@ -876,7 +889,7 @@ pub async fn ws_connect_full_opts(
                             path,
                             attempt_timeout,
                             sni,
-                            secure,
+                            route,
                         )
                         .await;
                     }
@@ -907,7 +920,7 @@ pub async fn connect_one_ws_full(
                 return Some(ws);
             }
         }
-        match ws_connect_full_opts(ip, d, path, timeout, None, Some(true)).await {
+        match ws_connect_full_opts(ip, d, path, timeout, None, WsRoute::Telegram).await {
             Ok(ws) => {
                 crate::proxy::set_ws_pool_fronting_first(false);
                 return Some(ws);
@@ -935,7 +948,7 @@ pub async fn connect_one_ws_full(
 
 pub async fn connect_fronted(ip: &str, domain: &str, path: &str) -> Option<RawWebSocket> {
     let path = if path.is_empty() { WS_PATH } else { path };
-    match ws_connect_full_opts(ip, domain, path, WS_POOL_FRONTING_TIMEOUT, Some(FRONTING_SNI), Some(true)).await {
+    match ws_connect_full_opts(ip, domain, path, WS_POOL_FRONTING_TIMEOUT, Some(FRONTING_SNI), WsRoute::Telegram).await {
         Ok(ws) => {
             STATS.connections_fronting.fetch_add(1, Ordering::Relaxed);
             crate::proxy::set_ws_pool_fronting_first(true);

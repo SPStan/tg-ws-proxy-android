@@ -14,6 +14,12 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "proxy_settings")
 
+data class TransportSettings(
+    val disableCfTls: Boolean = false,
+    val workerDomains: String = "",
+    val fakeTlsDomain: String = ""
+)
+
 class SettingsStore(private val context: Context) {
 
     companion object {
@@ -36,6 +42,9 @@ class SettingsStore(private val context: Context) {
         val PORT = stringPreferencesKey("port")
         val BIND_IP = stringPreferencesKey("bind_ip")
         val POOL_SIZE = intPreferencesKey("pool_size")
+        val DISABLE_CF_TLS = booleanPreferencesKey("disable_cf_tls")
+        val CF_WORKER_DOMAINS = stringPreferencesKey("cf_worker_domains")
+        val FAKE_TLS_DOMAIN = stringPreferencesKey("fake_tls_domain")
         val CFPROXY_ENABLED = booleanPreferencesKey("cfproxy_enabled")
         val CUSTOM_CF_DOMAIN_ENABLED = booleanPreferencesKey("custom_cf_domain_enabled")
         val CUSTOM_CF_DOMAIN = stringPreferencesKey("custom_cf_domain")
@@ -82,6 +91,13 @@ class SettingsStore(private val context: Context) {
     val port: Flow<String> = context.dataStore.data.map { it[Keys.PORT] ?: "1443" }
     val bindIp: Flow<String> = context.dataStore.data.map { it[Keys.BIND_IP] ?: "127.0.0.1" }
     val poolSize: Flow<Int> = context.dataStore.data.map { it[Keys.POOL_SIZE] ?: 4 }
+    val transportSettings: Flow<TransportSettings> = context.dataStore.data.map {
+        TransportSettings(
+            disableCfTls = it[Keys.DISABLE_CF_TLS] ?: false,
+            workerDomains = it[Keys.CF_WORKER_DOMAINS].orEmpty(),
+            fakeTlsDomain = it[Keys.FAKE_TLS_DOMAIN].orEmpty()
+        )
+    }
     val cfproxyEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.CFPROXY_ENABLED] ?: true }
     val customCfDomainEnabled: Flow<Boolean> = context.dataStore.data.map { it[Keys.CUSTOM_CF_DOMAIN_ENABLED] ?: false }
     val customCfDomain: Flow<String> = context.dataStore.data.map { it[Keys.CUSTOM_CF_DOMAIN] ?: "" }
@@ -105,6 +121,17 @@ class SettingsStore(private val context: Context) {
     val updateDialogLastActionVersion: Flow<String> = context.dataStore.data.map { it[Keys.UPDATE_DIALOG_LAST_ACTION_VERSION] ?: "" }
     val updateDialogLastAction: Flow<String> = context.dataStore.data.map { it[Keys.UPDATE_DIALOG_LAST_ACTION] ?: "" }
     val updateDialogLastActionAt: Flow<Long> = context.dataStore.data.map { it[Keys.UPDATE_DIALOG_LAST_ACTION_AT] ?: 0L }
+
+    suspend fun saveDisableCfTls(disabled: Boolean) {
+        context.dataStore.edit { it[Keys.DISABLE_CF_TLS] = disabled }
+    }
+
+    suspend fun saveTransportDomains(workers: String, fakeTls: String) {
+        context.dataStore.edit {
+            it[Keys.CF_WORKER_DOMAINS] = workers.trim()
+            it[Keys.FAKE_TLS_DOMAIN] = fakeTls.trim()
+        }
+    }
 
     suspend fun saveSecretKey(key: String) {
         context.dataStore.edit { it[Keys.SECRET_KEY] = key }

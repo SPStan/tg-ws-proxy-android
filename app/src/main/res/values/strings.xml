@@ -127,4 +127,10 @@
     <string name="interval_never">Never</string>
     <string name="interval_hours">%1$d h</string>
     <string name="port_is_not_available">Port %1$d is in use, please try another one</string>
+    <string name="disable_cf_tls">Disable TLS for CF proxy and CF Worker</string>
+    <string name="disable_cf_tls_description">WS exposes WebSocket headers to network intermediaries. The selected server must accept WS over port 80.</string>
+    <string name="cf_worker_domains">CF Worker domains separated by spaces</string>
+    <string name="fake_tls_domain">Fake TLS masking domain (optional)</string>
+    <string name="save_transport_domains">Save domains</string>
+    <string name="transport_restart_required">Restart the proxy to apply the saved transport settings.</string>
 </resources>

@@ -7,13 +7,14 @@ plugins {
 
 android {
     namespace = "com.amurcanov.tgwsproxy"
-    compileSdk = 35
+    compileSdk = 37
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "com.amurcanov.tgwsproxy"
+        applicationId = "com.spstan.tgwsproxy"
         targetSdk = 35
-        versionCode = 123
-        versionName = "1.2.3"
+        versionCode = 124
+        versionName = "1.2.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -141,7 +142,7 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     // JNA for easy C-shared library calls
-    implementation("net.java.dev.jna:jna:5.14.0@aar")
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
     debugImplementation("com.squareup.leakcanary:leakcanary-android:2.14")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.appcompat:appcompat:1.6.1")

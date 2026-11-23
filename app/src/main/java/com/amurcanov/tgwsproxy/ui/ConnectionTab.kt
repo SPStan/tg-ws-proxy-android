@@ -48,6 +48,10 @@ fun ConnectionTab(settingsStore: SettingsStore) {
     val context = LocalContext.current
     val isRunning by ProxyService.isRunning.collectAsStateWithLifecycle()
     val isVerifiedRunning by ProxyService.isVerifiedRunning.collectAsStateWithLifecycle()
+    val activeTransport by ProxyService.activeTransportSettings.collectAsStateWithLifecycle()
+    val savedTransport by settingsStore.transportSettings.collectAsStateWithLifecycle(
+        initialValue = com.amurcanov.tgwsproxy.TransportSettings()
+    )
 
     val isReady by settingsStore.isReady.collectAsStateWithLifecycle(initialValue = false)
 
@@ -101,7 +105,14 @@ fun ConnectionTab(settingsStore: SettingsStore) {
         if (raw.isNotEmpty() && raw != "LOADING") raw else "00000000000000000000000000000000"
     }
     val bindIp = savedBindIp.trim().takeIf { it.isNotEmpty() } ?: "127.0.0.1"
-    val proxyUrl = "https://t.me/proxy?server=$bindIp&port=$port&secret=dd$secretForUrl"
+    val fakeTlsDomain = if (isRunning) activeTransport.fakeTlsDomain else savedTransport.fakeTlsDomain
+    val linkSecret = if (fakeTlsDomain.isEmpty()) {
+        "dd$secretForUrl"
+    } else {
+        val domainHex = fakeTlsDomain.encodeToByteArray().joinToString("") { "%02x".format(it) }
+        "ee$secretForUrl$domainHex"
+    }
+    val proxyUrl = "https://t.me/proxy?server=$bindIp&port=$port&secret=$linkSecret"
     
     var applyMode by rememberSaveable { mutableStateOf("packages") }
 

@@ -36,6 +36,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.amurcanov.tgwsproxy.ProxyService
+import com.amurcanov.tgwsproxy.R
+import com.amurcanov.tgwsproxy.TransportSettings
 import com.amurcanov.tgwsproxy.SettingsStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -67,6 +69,16 @@ fun SettingsTab(settingsStore: SettingsStore) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val isRunning by ProxyService.isRunning.collectAsStateWithLifecycle()
+    val activeTransport by ProxyService.activeTransportSettings.collectAsStateWithLifecycle()
+    val savedTransport by settingsStore.transportSettings.collectAsStateWithLifecycle(
+        initialValue = TransportSettings()
+    )
+    var workerDomains by rememberSaveable(savedTransport.workerDomains) {
+        mutableStateOf(savedTransport.workerDomains)
+    }
+    var fakeTlsDomain by rememberSaveable(savedTransport.fakeTlsDomain) {
+        mutableStateOf(savedTransport.fakeTlsDomain)
+    }
 
     val isReady by settingsStore.isReady.collectAsStateWithLifecycle(initialValue = false)
     val isExperimental by settingsStore.isExperimentalMode.collectAsStateWithLifecycle(initialValue = false)
@@ -195,7 +207,47 @@ fun SettingsTab(settingsStore: SettingsStore) {
         }
 
         Spacer(modifier = Modifier.height(8.dp))
-        
+
+        AppSectionCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.disable_cf_tls), modifier = Modifier.weight(1f))
+                Switch(
+                    checked = savedTransport.disableCfTls,
+                    onCheckedChange = { disabled ->
+                        scope.launch { settingsStore.saveDisableCfTls(disabled) }
+                    }
+                )
+            }
+            Text(stringResource(R.string.disable_cf_tls_description), style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(
+                value = workerDomains,
+                onValueChange = { workerDomains = it },
+                label = { Text(stringResource(R.string.cf_worker_domains)) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = fakeTlsDomain,
+                onValueChange = { fakeTlsDomain = it },
+                label = { Text(stringResource(R.string.fake_tls_domain)) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            val validDomain = fakeTlsDomain.isBlank() ||
+                fakeTlsDomain.trim().matches(Regex("[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+"))
+            TextButton(
+                enabled = validDomain && (workerDomains.trim() != savedTransport.workerDomains ||
+                    fakeTlsDomain.trim() != savedTransport.fakeTlsDomain),
+                onClick = { scope.launch { settingsStore.saveTransportDomains(workerDomains, fakeTlsDomain) } }
+            ) {
+                Text(stringResource(R.string.save_transport_domains))
+            }
+            if (isRunning && savedTransport != activeTransport) {
+                Text(stringResource(R.string.transport_restart_required), color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
         AppSectionCard {
             Column(
                 modifier = Modifier.fillMaxWidth(),

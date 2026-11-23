@@ -127,4 +127,10 @@
     <string name="interval_never">Никогда</string>
     <string name="interval_hours">%1$d ч</string>
     <string name="port_is_not_available">"Порт %1$d используется, пожалуйста попробуйте другой "</string>
+    <string name="disable_cf_tls">Выключить TLS для CF-прокси и CF-worker</string>
+    <string name="disable_cf_tls_description">В режиме WS сетевому посреднику видны заголовки WebSocket. Выбранный сервер должен принимать WS на порту 80.</string>
+    <string name="cf_worker_domains">Домены CF Worker через пробел</string>
+    <string name="fake_tls_domain">Маскирующий домен Fake TLS (необязательно)</string>
+    <string name="save_transport_domains">Сохранить домены</string>
+    <string name="transport_restart_required">Перезапустите прокси, чтобы применить сохранённые параметры транспорта.</string>
 </resources>
