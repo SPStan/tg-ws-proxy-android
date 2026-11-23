@@ -2,6 +2,11 @@ name: Android
 on:
   push:
   workflow_dispatch:
+    inputs:
+      sign_release:
+        description: Build a release APK with the owner's signing key
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -25,28 +30,12 @@ jobs:
         run: cargo +1.95.0 test --locked
       - name: Build Rust and APK
         run: |
-          ndk="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk/aarch64-linux-android24-clang"
-          export CC_aarch64_linux_android="$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
-          export AR_aarch64_linux_android="$ndk/llvm-ar"
-          cargo +1.95.0 build --locked --release --target aarch64-linux-android
-          install -D target/aarch64-linux-android/release/libtgwsproxy.so app/src/main/jniLibs/arm64-v8a/libtgwsproxy.so
+          bash scripts/build-android-native.sh arm64-v8a
           java -classpath gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :app:assembleArm64Debug --no-daemon
       - name: Verify APK signature and 16 KB alignment
         run: |
           apk=app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
-          tools="$ANDROID_HOME/build-tools/36.0.0"
-          "$tools/apksigner" verify --print-certs "$apk"
-          "$tools/zipalign" -c -P 16 -v 4 "$apk"
-          tmp=$(mktemp -d)
-          unzip -q "$apk" 'lib/arm64-v8a/*.so' -d "$tmp"
-          test -f "$tmp/lib/arm64-v8a/libtgwsproxy.so"
-          test -f "$tmp/lib/arm64-v8a/libjnidispatch.so"
-          objdump="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump"
-          for so in "$tmp"/lib/arm64-v8a/*.so; do
-            "$objdump" -p "$so" | awk '/LOAD/ { n++; split($NF,a,"\^"); if (a[2]+0 < 14) bad=1 } END { exit (!n || bad) }'
-          done
-          sha256sum "$apk" | tee "$apk.sha256" >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/verify-android-apk.sh "$apk" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: arm64-debug
@@ -54,4 +43,27 @@ jobs:
             app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
             app/build/outputs/apk/arm64/debug/app-arm64-debug.apk.sha256
           if-no-files-found: error
-
+      - name: Build signed release
+        if: inputs.sign_release
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$RELEASE_KEYSTORE_BASE64" && test -n "$KEYSTORE_PASSWORD" &&
+            test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          export KEYSTORE_FILE=$(mktemp)
+          trap 'rm -f "$KEYSTORE_FILE"' EXIT
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          unset RELEASE_KEYSTORE_BASE64
+          java -classpath gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :app:assembleArm64Release --no-daemon --no-configuration-cache
+          bash scripts/verify-android-apk.sh app/build/outputs/apk/arm64/release/app-arm64-release.apk
+      - uses: actions/upload-artifact@v4
+        if: inputs.sign_release
+        with:
+          name: arm64-release
+          path: |
+            app/build/outputs/apk/arm64/release/app-arm64-release.apk
+            app/build/outputs/apk/arm64/release/app-arm64-release.apk.sha256
+          if-no-files-found: error

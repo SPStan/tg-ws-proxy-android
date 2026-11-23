@@ -8,7 +8,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -734,6 +734,7 @@ pub struct ProxyPools {
     pub cf_worker: Arc<CfWorkerPool>,
     cf_tls: bool,
     cf_h2: crate::cf_h2::CfH2Pool,
+    fake_tls_appdata: AtomicUsize,
 }
 
 impl ProxyPools {
@@ -742,6 +743,7 @@ impl ProxyPools {
         ProxyPools {
             cf_tls,
             cf_h2: Default::default(),
+            fake_tls_appdata: AtomicUsize::new(0),
             ws: Arc::new(WsPool::new(cancel_token.clone())),
             cf_worker: Arc::new(CfWorkerPool::new(cancel_token, cf_tls)),
         }
@@ -1618,7 +1620,10 @@ pub async fn handle_client(
             }
         }
         if first[0] == faketls::TLS_RECORD_HANDSHAKE {
-            match faketls::server_handshake(conn, first[0], &secret_bytes, &masking, &label).await
+            match faketls::server_handshake(
+                conn, first[0], &secret_bytes, &masking, &label,
+                pools.fake_tls_appdata.load(Ordering::Relaxed),
+            ).await
             {
                 Some(plain) => {
                     serve_core(
@@ -2193,8 +2198,19 @@ pub async fn run_proxy(
     if !pools.cf_tls {
         linfo!("  No secure:     enabled (port 80 for CF proxy/worker)");
     }
-    if !FAKE_TLS_DOMAIN.read().is_empty() {
-        linfo!("  Fake TLS:      {}", FAKE_TLS_DOMAIN.read().clone());
+    let masking = FAKE_TLS_DOMAIN.read().clone();
+    if !masking.is_empty() {
+        linfo!("  Fake TLS:      {}", masking);
+        let pools = pools.clone();
+        let cancel = cancel_root.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                len = faketls::probe_appdata_len(&masking) => {
+                    pools.fake_tls_appdata.store(len.unwrap_or(0), Ordering::Relaxed);
+                }
+            }
+        });
     }
 
     let cancel_stats = cancel_root.clone();
@@ -2222,7 +2238,11 @@ pub async fn run_proxy(
                         let p = pools.clone();
                         let cancel = cancel_root.child_token();
                         tokio::spawn(async move {
-                            handle_client(p, conn, cancel).await;
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => {}
+                                _ = handle_client(p, conn, cancel.clone()) => {}
+                            }
                         });
                     }
                     Err(_) => {
